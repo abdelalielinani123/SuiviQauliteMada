@@ -22,7 +22,7 @@
   import { getFirestore, doc, getDoc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
   import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 
-  const firebaseConfig = {
+  const firebaseConfig = const firebaseConfig = {
 
   apiKey: "AIzaSyCwQkHcJLFn8z0cw1gBYUmZpW7VRs5dGAc",
 
@@ -1405,7 +1405,8 @@ function App(){
       const resR = await fsLoad(STORAGE_KEY_ROSTER, SEED_ROSTER);
       setEcarts(resE.value);
       setWeekly(resW.value);
-      setRoster(resR.value);
+      // Un tableau vide enregistré avant l'ajout du roster ne doit pas écraser SEED_ROSTER
+      setRoster(resR.value && resR.value.length > 0 ? resR.value : SEED_ROSTER);
       setConnStatus(resE.status);
       setConnError(resE.error || "");
       setLoaded(true);
@@ -1414,7 +1415,7 @@ function App(){
       if (resE.status === "ok") {
         unsubEcarts = fsSubscribe(STORAGE_KEY_ECARTS, (val) => setEcarts(val));
         unsubWeekly = fsSubscribe(STORAGE_KEY_WEEKLY, (val) => setWeekly(val));
-        unsubRoster = fsSubscribe(STORAGE_KEY_ROSTER, (val) => setRoster(val));
+        unsubRoster = fsSubscribe(STORAGE_KEY_ROSTER, (val) => setRoster(val && val.length > 0 ? val : SEED_ROSTER));
       }
     })();
 

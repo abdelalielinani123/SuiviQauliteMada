@@ -22,24 +22,14 @@
   import { getFirestore, doc, getDoc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
   import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 
-  const firebaseConfig = const firebaseConfig = {
-
-  apiKey: "AIzaSyCwQkHcJLFn8z0cw1gBYUmZpW7VRs5dGAc",
-
-  authDomain: "suiviqualitemada.firebaseapp.com",
-
-  projectId: "suiviqualitemada",
-
-  storageBucket: "suiviqualitemada.firebasestorage.app",
-
-  messagingSenderId: "51800223156",
-
-  appId: "1:51800223156:web:49a541a49bc7976d8e16e1"
-
-};
-
-
-
+  const firebaseConfig = {
+    apiKey: "AIzaSyCwQkHcJLFn8z0cw1gBYUmZpW7VRs5dGAc",
+    authDomain: "suiviqualitemada.firebaseapp.com",
+    projectId: "suiviqualitemada",
+    storageBucket: "suiviqualitemada.firebasestorage.app",
+    messagingSenderId: "51800223156",
+    appId: "1:51800223156:web:49a541a49bc7976d8e16e1",
+  };
 
   const isConfigured = firebaseConfig.apiKey !== "COLLE_TA_CLE_API_ICI";
   window.__firebaseConfigured = isConfigured;

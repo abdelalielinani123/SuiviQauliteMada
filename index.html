@@ -23,20 +23,13 @@
   import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 
   const firebaseConfig = {
-
-  apiKey: "AIzaSyCwQkHcJLFn8z0cw1gBYUmZpW7VRs5dGAc",
-
-  authDomain: "suiviqualitemada.firebaseapp.com",
-
-  projectId: "suiviqualitemada",
-
-  storageBucket: "suiviqualitemada.firebasestorage.app",
-
-  messagingSenderId: "51800223156",
-
-  appId: "1:51800223156:web:49a541a49bc7976d8e16e1"
-
-};
+    apiKey: "COLLE_TA_CLE_API_ICI",
+    authDomain: "TON-PROJET.firebaseapp.com",
+    projectId: "TON-PROJET",
+    storageBucket: "TON-PROJET.appspot.com",
+    messagingSenderId: "000000000000",
+    appId: "1:000000000000:web:xxxxxxxxxxxxxxxxxx",
+  };
 
   const isConfigured = firebaseConfig.apiKey !== "COLLE_TA_CLE_API_ICI";
   window.__firebaseConfigured = isConfigured;
@@ -239,6 +232,43 @@ const SEED_WEEKLY = [
 ];
 /* NCC est stocké ×10 dans l'historique (ex: 8.2/10 -> 82) pour partager l'échelle 0-100 avec les autres indicateurs. */
 
+/* Correspondance semaine -> mois, déduite des dates réelles (S19 = semaine du 04/05/2026) */
+const WEEK_TO_MONTH = {
+  S19: "Mai", S20: "Mai", S21: "Mai", S22: "Mai",
+  S23: "Juin", S24: "Juin", S25: "Juin", S26: "Juin",
+  S27: "Juillet", S28: "Juillet",
+};
+const MONTH_ORDER = ["Mai", "Juin", "Juillet"];
+
+function extractWeekCode(semaineStr){
+  if (!semaineStr) return null;
+  const m = String(semaineStr).match(/S\d+/);
+  return m ? m[0] : null;
+}
+function weekToMonth(semaineStr){
+  const code = extractWeekCode(semaineStr);
+  return code ? (WEEK_TO_MONTH[code] || null) : null;
+}
+function computeMonthly(weekly){
+  return MONTH_ORDER.map((mois) => {
+    const rows = weekly.filter((w) => WEEK_TO_MONTH[w.semaine] === mois);
+    const row = { mois };
+    INDICATEURS.forEach((ind) => {
+      const vals = rows.map((r) => r[ind]).filter((v) => v !== null && v !== undefined);
+      row[ind] = vals.length ? Math.round((vals.reduce((a,b) => a+b, 0)/vals.length) * 10)/10 : null;
+    });
+    return row;
+  }).filter((row) => INDICATEURS.some((ind) => row[ind] !== null));
+}
+function computeDaily(ecarts){
+  const map = {};
+  ecarts.forEach((e) => {
+    if (!e.date) return;
+    map[e.date] = (map[e.date] || 0) + 1;
+  });
+  return Object.keys(map).sort().map((date) => ({ date, count: map[date] }));
+}
+
 /* ============================================================
    UTILITAIRES
    ============================================================ */
@@ -413,7 +443,7 @@ function BarChartH({ data, labelKey, valueKey, height=220 }) {
   );
 }
 
-function LineChartMulti({ data, series, height=340 }) {
+function LineChartMulti({ data, series, height=340, xKey="semaine" }) {
   const W = 700, H = height, padL = 30, padR = 20, padT = 20, padB = 50;
   const innerW = W - padL - padR, innerH = H - padT - padB;
   const stepX = innerW / (data.length - 1 || 1);
@@ -456,7 +486,7 @@ function LineChartMulti({ data, series, height=340 }) {
           return <circle key={s.key+i} cx={xFor(i)} cy={yFor(v)} r="2.6" fill={s.color} />;
         }))}
         {data.map((row, i) => (
-          <text key={i} x={xFor(i)} y={H-padB+16} fontSize="10" textAnchor="middle" fill="#6B6270">{row.semaine}</text>
+          <text key={i} x={xFor(i)} y={H-padB+16} fontSize="10" textAnchor="middle" fill="#6B6270">{row[xKey]}</text>
         ))}
       </svg>
       <div style={{display:"flex", flexWrap:"wrap", gap:"10px 16px", marginTop:8, justifyContent:"center"}}>
@@ -477,6 +507,67 @@ function LineChartMulti({ data, series, height=340 }) {
 /* ============================================================
    SOUS-COMPOSANTS
    ============================================================ */
+function DayCountChart({ data, height=260 }) {
+  if (!data.length) {
+    return <p style={{fontSize:13, color:"var(--textMuted)"}}>Aucun écart avec une date exploitable sur la période sélectionnée.</p>;
+  }
+  const W = 700, H = height, padL = 30, padR = 10, padT = 20, padB = 60;
+  const innerW = W - padL - padR, innerH = H - padT - padB;
+  const max = Math.max(...data.map((d) => d.count), 4);
+  const bw = innerW / data.length;
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%", height}}>
+      <line x1={padL} x2={W-padR} y1={H-padB} y2={H-padB} stroke="var(--greyLine)" />
+      {data.map((d, i) => {
+        const barH = (d.count/max) * innerH;
+        const x = padL + i*bw + bw*0.15;
+        const w = bw*0.7;
+        const y = H - padB - barH;
+        return (
+          <g key={d.date}>
+            <rect x={x} y={y} width={w} height={barH} rx="3" fill="#96408F" />
+            <text x={x+w/2} y={y-5} fontSize="10" fontWeight="700" textAnchor="middle" fill="#241C29">{d.count}</text>
+            <text x={x+w/2} y={H-padB+14} fontSize="9" textAnchor="middle" fill="#6B6270" transform={`rotate(-40 ${x+w/2} ${H-padB+14})`}>
+              {d.date.slice(5)}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function PeriodFilter({ granularity, setGranularity, value, setValue, weekOptions, monthOptions, dayOptions }) {
+  const granOptions = [
+    { id: "tous", label: "Toutes périodes" },
+    { id: "jour", label: "Jour" },
+    { id: "semaine", label: "Semaine" },
+    { id: "mois", label: "Mois" },
+  ];
+  const valueOptions = granularity === "semaine" ? weekOptions : granularity === "mois" ? monthOptions : granularity === "jour" ? dayOptions : [];
+  return (
+    <div className="filters" style={{marginBottom:16}}>
+      <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600}}>Filtrer :</span>
+      {granOptions.map((g) => (
+        <button
+          key={g.id}
+          className="btn"
+          style={granularity === g.id ? { background:"var(--purple)", color:"#fff", borderColor:"var(--purple)" } : {}}
+          onClick={() => { setGranularity(g.id); setValue("Toutes"); }}
+        >
+          {g.label}
+        </button>
+      ))}
+      {granularity !== "tous" && (
+        <select value={value} onChange={(e) => setValue(e.target.value)}>
+          <option>Toutes</option>
+          {valueOptions.map((o) => <option key={o}>{o}</option>)}
+        </select>
+      )}
+    </div>
+  );
+}
+
 function StatCard({ label, value, sub, tone="neutral" }) {
   return (
     <div className={"stat " + tone}>
@@ -502,24 +593,60 @@ function SectionTitle({ icon, children }) {
    VUE : REPORTING
    ============================================================ */
 function ReportingView({ ecarts, weekly }) {
+  const [granularity, setGranularity] = useState("tous");
+  const [periodValue, setPeriodValue] = useState("Toutes");
+
+  const weekOptions = useMemo(() => {
+    const set = new Set(ecarts.map((e) => extractWeekCode(e.semaine)).filter(Boolean));
+    return [...set].sort();
+  }, [ecarts]);
+  const monthOptions = useMemo(() => {
+    const set = new Set(ecarts.map((e) => weekToMonth(e.semaine)).filter(Boolean));
+    return MONTH_ORDER.filter((m) => set.has(m));
+  }, [ecarts]);
+  const dayOptions = useMemo(() => {
+    const set = new Set(ecarts.map((e) => e.date).filter(Boolean));
+    return [...set].sort();
+  }, [ecarts]);
+
+  const filteredForOverview = useMemo(() => {
+    if (granularity === "tous" || periodValue === "Toutes") return ecarts;
+    return ecarts.filter((e) => {
+      if (granularity === "semaine") return extractWeekCode(e.semaine) === periodValue;
+      if (granularity === "mois") return weekToMonth(e.semaine) === periodValue;
+      if (granularity === "jour") return e.date === periodValue;
+      return true;
+    });
+  }, [ecarts, granularity, periodValue]);
+
   const indStats = computeIndicatorStats(ecarts);
   const mgrStats = computeManagerStats(ecarts);
-  const total = ecarts.length;
-  const totalDone = ecarts.filter((e) => e.statut === "OK" || e.statut === "KO").length;
+  const total = filteredForOverview.length;
+  const totalDone = filteredForOverview.filter((e) => e.statut === "OK" || e.statut === "KO").length;
   const tauxGlobal = total ? Math.round((totalDone/total)*1000)/10 : 0;
-  const alertesCount = ecarts.filter((e) => e.alerte).length;
+  const alertesCount = filteredForOverview.filter((e) => e.alerte).length;
   const series = INDICATEURS.map((k, i) => ({ key: k, color: SERIES_COLORS[i] }));
 
   return (
     <div>
       <div style={{marginBottom:28}}>
         <SectionTitle icon="📊">Vue d'ensemble</SectionTitle>
+        <PeriodFilter
+          granularity={granularity} setGranularity={setGranularity}
+          value={periodValue} setValue={setPeriodValue}
+          weekOptions={weekOptions} monthOptions={monthOptions} dayOptions={dayOptions}
+        />
         <div className="stat-row">
           <StatCard label="Taux de finalisation global" value={tauxGlobal+"%"} tone={tauxGlobal>=70?"good":tauxGlobal>=40?"accent":"bad"} sub={totalDone+"/"+total+" débriefées"} />
           <StatCard label="Évaluations en écart (total)" value={total} tone="neutral" />
           <StatCard label="Restant à débriefer" value={total-totalDone} tone={(total-totalDone)>0?"bad":"good"} />
           <StatCard label="Points d'alerte récurrence" value={alertesCount} tone={alertesCount>0?"bad":"good"} sub={alertesCount>0?"conseillers à surveiller":"aucun signal"} />
         </div>
+        {granularity !== "tous" && periodValue !== "Toutes" && (
+          <p style={{fontSize:11, color:"var(--textMuted)", marginTop:8}}>
+            Filtré sur : {granularity} {periodValue}. Les graphiques ci-dessous restent calculés sur l'ensemble des données.
+          </p>
+        )}
       </div>
 
       <div style={{marginBottom:28}}>
@@ -534,8 +661,82 @@ function ReportingView({ ecarts, weekly }) {
 
       <div>
         <SectionTitle icon="📈">Performance des indicateurs, semaine par semaine</SectionTitle>
-        <div className="card"><LineChartMulti data={weekly} series={series} /></div>
+        <div className="card"><LineChartMulti data={weekly} series={series} xKey="semaine" /></div>
       </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   VUE : SUIVI DE LA PERFORMANCE
+   ============================================================ */
+function PerformanceView({ ecarts, weekly }) {
+  const [granularity, setGranularity] = useState("semaine");
+  const series = INDICATEURS.map((k, i) => ({ key: k, color: SERIES_COLORS[i] }));
+  const monthly = useMemo(() => computeMonthly(weekly), [weekly]);
+  const daily = useMemo(() => computeDaily(ecarts), [ecarts]);
+
+  const granOptions = [
+    { id: "jour", label: "Jour" },
+    { id: "semaine", label: "Semaine" },
+    { id: "mois", label: "Mois" },
+  ];
+
+  return (
+    <div>
+      <SectionTitle icon="📈">Suivi de la performance</SectionTitle>
+
+      <div className="filters" style={{marginBottom:16}}>
+        <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600}}>Vue :</span>
+        {granOptions.map((g) => (
+          <button
+            key={g.id}
+            className="btn"
+            style={granularity === g.id ? { background:"var(--purple)", color:"#fff", borderColor:"var(--purple)" } : {}}
+            onClick={() => setGranularity(g.id)}
+          >
+            {g.label}
+          </button>
+        ))}
+      </div>
+
+      {granularity === "semaine" && (
+        <div className="card">
+          <div style={{fontSize:13, fontWeight:600, color:"var(--purpleDark)", marginBottom:10}}>
+            Évolution des résultats par semaine (S19 à S28)
+          </div>
+          <LineChartMulti data={weekly} series={series} xKey="semaine" />
+        </div>
+      )}
+
+      {granularity === "mois" && (
+        <div className="card">
+          <div style={{fontSize:13, fontWeight:600, color:"var(--purpleDark)", marginBottom:10}}>
+            Évolution des résultats par mois (moyenne des semaines disponibles)
+          </div>
+          <LineChartMulti data={monthly} series={series} xKey="mois" />
+          <div className="notice info" style={{marginTop:14}}>
+            <span className="ic">ℹ</span>
+            <div>Chaque point mensuel est la moyenne des semaines disponibles sur ce mois (Mai = S19-S22,
+            Juin = S23-S26, Juillet = S27-S28 à ce jour). Un indicateur sans donnée sur tout le mois n'apparaît pas.</div>
+          </div>
+        </div>
+      )}
+
+      {granularity === "jour" && (
+        <div className="card">
+          <div style={{fontSize:13, fontWeight:600, color:"var(--purpleDark)", marginBottom:10}}>
+            Nombre d'évaluations en écart constatées par jour
+          </div>
+          <DayCountChart data={daily} />
+          <div className="notice info" style={{marginTop:14}}>
+            <span className="ic">ℹ</span>
+            <div>Vue par jour = volume d'écarts constatés (comptage), et non un taux de conformité : les fichiers
+            source ne fournissent un taux calculé qu'à la semaine. Seules les lignes avec une date renseignée
+            apparaissent ici ({ecarts.filter((e) => e.date).length}/{ecarts.length} lignes datées).</div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -543,7 +744,69 @@ function ReportingView({ ecarts, weekly }) {
 /* ============================================================
    VUE : SUIVI DÉBRIEFING
    ============================================================ */
-function DebriefingView({ ecarts, setEcarts }) {
+function EcartDetailPanel({ e, onSave, onDelete }) {
+  const [draft, setDraft] = useState({ statut: e.statut, action: e.action, dateDebrief: e.dateDebrief, manager: e.manager });
+  const [saving, setSaving] = useState(false);
+  const [saveResult, setSaveResult] = useState(null); // null | {ok:true} | {ok:false, reason}
+
+  useEffect(() => {
+    setDraft({ statut: e.statut, action: e.action, dateDebrief: e.dateDebrief, manager: e.manager });
+    setSaveResult(null);
+  }, [e.id]);
+
+  const dirty = draft.statut !== e.statut || draft.action !== e.action || draft.dateDebrief !== e.dateDebrief || draft.manager !== e.manager;
+
+  async function handleSave(){
+    setSaving(true);
+    const result = await onSave(draft);
+    setSaving(false);
+    setSaveResult(result || { ok: false, reason: "unknown" });
+    setTimeout(() => setSaveResult(null), 4000);
+  }
+
+  return (
+    <div className="detail-panel">
+      <div className="detail-grid">
+        <div>
+          <p className="field-label">Référence</p>
+          <p className="field-value" style={{wordBreak:"break-all", color:"var(--textMuted)"}}>{e.reference || "—"}</p>
+          <p className="field-label">Constat détaillé</p>
+          <p className="field-value">{e.constat}</p>
+          {e.alerte && <div className="status-msg err" style={{display:"inline-block"}}>⚠ {e.alerte}</div>}
+        </div>
+        <div>
+          <p className="field-label">Statut du débriefing</p>
+          <select style={{width:"100%", marginBottom:10}} value={draft.statut} onChange={(ev) => setDraft({...draft, statut: ev.target.value})}>
+            {STATUTS.map((s) => <option key={s}>{s}</option>)}
+          </select>
+          <p className="field-label">Action réalisée auprès du conseiller</p>
+          <textarea style={{width:"100%", marginBottom:10}} rows="2" value={draft.action} onChange={(ev) => setDraft({...draft, action: ev.target.value})}></textarea>
+          <p className="field-label">Date du débriefing</p>
+          <input type="date" style={{width:"100%", marginBottom:10}} value={draft.dateDebrief} onChange={(ev) => setDraft({...draft, dateDebrief: ev.target.value})} />
+          <p className="field-label">Manager référent</p>
+          <select style={{width:"100%", marginBottom:12}} value={draft.manager} onChange={(ev) => setDraft({...draft, manager: ev.target.value})}>
+            {MANAGERS.map((m) => <option key={m}>{m}</option>)}
+          </select>
+          <div style={{display:"flex", alignItems:"center", gap:8, flexWrap:"wrap"}}>
+            <button className="btn primary" disabled={!dirty || saving} onClick={handleSave}>
+              {saving ? "Enregistrement..." : "💾 Enregistrer"}
+            </button>
+            <button className="btn" style={{color:"var(--red)", background:"var(--redSoft)", borderColor:"var(--redSoft)"}} onClick={onDelete}>🗑 Supprimer cette ligne</button>
+          </div>
+          {saveResult && saveResult.ok && <div className="status-msg ok" style={{marginTop:10, display:"inline-block"}}>✓ Modifications enregistrées en ligne</div>}
+          {saveResult && !saveResult.ok && (
+            <div className="status-msg err" style={{marginTop:10, display:"inline-block"}}>
+              ⚠ Modification appliquée mais non sauvegardée en ligne ({saveResult.reason === "unconfigured" ? "Firebase non configuré" : "connexion indisponible"}) — elle sera perdue à la fermeture de la page.
+            </div>
+          )}
+          {dirty && !saveResult && !saving && <div style={{fontSize:11, color:"var(--amber)", marginTop:10}}>Modifications non enregistrées — clique sur « Enregistrer » pour les valider.</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DebriefingView({ ecarts, setEcarts, weekly, onSaveNow }) {
   const [search, setSearch] = useState("");
   const [fInd, setFInd] = useState("Tous");
   const [fMgr, setFMgr] = useState("Tous");
@@ -562,8 +825,17 @@ function DebriefingView({ ecarts, setEcarts }) {
     return true;
   }), [ecarts, search, fInd, fMgr, fStat]);
 
-  function updateRow(id, patch){ setEcarts((prev) => prev.map((e) => e.id===id ? {...e, ...patch} : e)); }
-  function deleteRow(id){ setEcarts((prev) => prev.filter((e) => e.id !== id)); }
+  async function saveRow(id, patch){
+    const updated = ecarts.map((x) => x.id === id ? {...x, ...patch} : x);
+    setEcarts(updated);
+    if (onSaveNow) return await onSaveNow(updated, weekly);
+    return { ok: false, reason: "unconfigured" };
+  }
+  async function deleteRow(id){
+    const updated = ecarts.filter((e) => e.id !== id);
+    setEcarts(updated);
+    if (onSaveNow) await onSaveNow(updated, weekly);
+  }
   function addRow(row){ setEcarts((prev) => [...prev, {...row, id: uid()}]); setShowAdd(false); }
 
   return (
@@ -610,32 +882,7 @@ function DebriefingView({ ecarts, setEcarts }) {
                   {expanded === e.id && (
                     <tr>
                       <td colSpan="7" style={{padding:0}}>
-                        <div className="detail-panel">
-                          <div className="detail-grid">
-                            <div>
-                              <p className="field-label">Référence</p>
-                              <p className="field-value" style={{wordBreak:"break-all", color:"var(--textMuted)"}}>{e.reference || "—"}</p>
-                              <p className="field-label">Constat détaillé</p>
-                              <p className="field-value">{e.constat}</p>
-                              {e.alerte && <div className="status-msg err" style={{display:"inline-block"}}>⚠ {e.alerte}</div>}
-                            </div>
-                            <div>
-                              <p className="field-label">Statut du débriefing</p>
-                              <select style={{width:"100%", marginBottom:10}} value={e.statut} onChange={(ev) => updateRow(e.id, {statut: ev.target.value})}>
-                                {STATUTS.map((s) => <option key={s}>{s}</option>)}
-                              </select>
-                              <p className="field-label">Action réalisée auprès du conseiller</p>
-                              <textarea style={{width:"100%", marginBottom:10}} rows="2" value={e.action} onChange={(ev) => updateRow(e.id, {action: ev.target.value})}></textarea>
-                              <p className="field-label">Date du débriefing</p>
-                              <input type="date" style={{width:"100%", marginBottom:10}} value={e.dateDebrief} onChange={(ev) => updateRow(e.id, {dateDebrief: ev.target.value})} />
-                              <p className="field-label">Manager référent</p>
-                              <select style={{width:"100%", marginBottom:12}} value={e.manager} onChange={(ev) => updateRow(e.id, {manager: ev.target.value})}>
-                                {MANAGERS.map((m) => <option key={m}>{m}</option>)}
-                              </select>
-                              <button className="btn" style={{color:"var(--red)", background:"var(--redSoft)", borderColor:"var(--redSoft)"}} onClick={() => deleteRow(e.id)}>🗑 Supprimer cette ligne</button>
-                            </div>
-                          </div>
-                        </div>
+                        <EcartDetailPanel e={e} onSave={(patch) => saveRow(e.id, patch)} onDelete={() => deleteRow(e.id)} />
                       </td>
                     </tr>
                   )}
@@ -934,6 +1181,15 @@ function App(){
     return () => clearTimeout(t);
   }, [ecarts, weekly, loaded, connStatus]);
 
+  async function saveNow(ecartsToSave, weeklyToSave){
+    if (connStatus !== "ok") return { ok: false, reason: connStatus };
+    setSaving(true);
+    await fsSave(STORAGE_KEY_ECARTS, ecartsToSave);
+    await fsSave(STORAGE_KEY_WEEKLY, weeklyToSave);
+    setSaving(false);
+    return { ok: true };
+  }
+
   function importFromJSON(data){
     if (Array.isArray(data.ecarts)) setEcarts(data.ecarts.map((e) => ({...e, id: e.id ?? uid()})));
     if (Array.isArray(data.historique_kpi)) setWeekly(data.historique_kpi);
@@ -941,6 +1197,7 @@ function App(){
 
   const tabs = [
     { id:"reporting", label:"Reporting", icon:"📊" },
+    { id:"performance", label:"Suivi performance", icon:"📈" },
     { id:"debriefing", label:"Suivi débriefing", icon:"📋" },
     { id:"import", label:"Importer", icon:"⬆" },
     { id:"export", label:"Extractions", icon:"🗄" },
@@ -1001,7 +1258,8 @@ function App(){
 
       <div className="wrap content">
         {tab === "reporting" && <ReportingView ecarts={ecarts} weekly={weekly} />}
-        {tab === "debriefing" && <DebriefingView ecarts={ecarts} setEcarts={setEcarts} />}
+        {tab === "performance" && <PerformanceView ecarts={ecarts} weekly={weekly} />}
+        {tab === "debriefing" && <DebriefingView ecarts={ecarts} setEcarts={setEcarts} weekly={weekly} onSaveNow={saveNow} />}
         {tab === "import" && <ImportView ecarts={ecarts} setEcarts={setEcarts} onImportJSON={importFromJSON} />}
         {tab === "export" && <ExportView ecarts={ecarts} weekly={weekly} />}
       </div>

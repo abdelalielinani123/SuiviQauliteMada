@@ -1,0 +1,28 @@
+rules_version = '2';
+
+// Règles Firestore pour le tableau de bord Suivi Qualité TERSEA.
+//
+// Principe : toute personne authentifiée (y compris de façon anonyme,
+// ce que fait automatiquement l'application au chargement) peut lire
+// et écrire les documents du dossier "dashboard". Il n'y a pas de
+// distinction par utilisateur : c'est un outil d'équipe, pas un
+// système avec des comptes individuels.
+//
+// Important : cela signifie que toute personne qui a l'URL de la page
+// (et qui arrive à s'authentifier anonymement, ce qui est automatique)
+// peut modifier les données. Convient à un usage interne d'équipe.
+// Si tu veux restreindre davantage (ex. seuls certains e-mails
+// autorisés), il faut passer à une vraie authentification par e-mail
+// et adapter la règle ci-dessous (demande-le si besoin).
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /dashboard/{docId} {
+      allow read, write: if request.auth != null;
+    }
+    // Tout le reste est bloqué par défaut.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

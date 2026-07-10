@@ -1,0 +1,1019 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Suivi Qualité — TERSEA Madagascar</title>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+<!-- ============================================================
+     CONFIGURATION FIREBASE — à remplacer par les clés de TON projet
+     (Console Firebase > Paramètres du projet > Général > Tes applications > Config)
+     Ces clés ne sont PAS secrètes : la protection des données se fait via les
+     règles Firestore (fichier firestore.rules), pas en cachant cette config.
+     ============================================================ -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+  import { getFirestore, doc, getDoc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+  import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+
+  const firebaseConfig = {
+
+  apiKey: "AIzaSyCwQkHcJLFn8z0cw1gBYUmZpW7VRs5dGAc",
+
+  authDomain: "suiviqualitemada.firebaseapp.com",
+
+  projectId: "suiviqualitemada",
+
+  storageBucket: "suiviqualitemada.firebasestorage.app",
+
+  messagingSenderId: "51800223156",
+
+  appId: "1:51800223156:web:49a541a49bc7976d8e16e1"
+
+};
+
+  const isConfigured = firebaseConfig.apiKey !== "COLLE_TA_CLE_API_ICI";
+  window.__firebaseConfigured = isConfigured;
+
+  if (!isConfigured) {
+    window.__firebaseReady = true; // pas configuré -> on le signale à l'appli sans bloquer
+  } else {
+    try {
+      const app = initializeApp(firebaseConfig);
+      const db = getFirestore(app);
+      const auth = getAuth(app);
+      window.__fb = { db, doc, getDoc, setDoc, onSnapshot };
+      signInAnonymously(auth)
+        .then(() => { window.__firebaseReady = true; })
+        .catch((e) => { window.__firebaseError = e.message; window.__firebaseReady = true; });
+    } catch (e) {
+      window.__firebaseError = e.message;
+      window.__firebaseReady = true;
+    }
+  }
+</script>
+
+<style>
+  :root{
+    --purple:#96408F; --purpleDark:#5C2258; --purpleSoft:#F3E9F2;
+    --green:#3CA06E; --greenSoft:#E8F5EE;
+    --red:#D4415A; --redSoft:#FCEAED;
+    --amber:#C98A1E; --amberSoft:#FBF1E1;
+    --grey:#F4F6F7; --greyLine:#E4E1E6;
+    --text:#241C29; --textMuted:#6B6270;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0; font-family:Calibri,Arial,sans-serif; background:#FAFAFB; color:var(--text);}
+  .wrap{max-width:1100px; margin:0 auto; padding:0 24px;}
+  .header{background:var(--purpleDark); padding:20px 0;}
+  .header-inner{display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;}
+  .header h1{color:#fff; font-size:19px; margin:0; font-weight:700;}
+  .header p{color:#E8D5E6; font-size:12px; margin:2px 0 0;}
+  .header .status{color:#E8D5E6; font-size:12px; display:flex; align-items:center; gap:6px;}
+  .tabs{background:#fff; border-bottom:1px solid var(--greyLine);}
+  .tabs-inner{display:flex; gap:4px;}
+  .tab-btn{background:none; border:none; padding:12px 15px; font-size:14px; font-weight:500; cursor:pointer;
+    color:var(--textMuted); border-bottom:2px solid transparent; display:flex; align-items:center; gap:6px;}
+  .tab-btn.active{color:var(--purpleDark); border-bottom-color:var(--purple);}
+  .content{padding:24px 0 40px;}
+  .section-title{display:flex; align-items:center; gap:8px; margin:0 0 16px;}
+  .section-title .ic{background:var(--purpleSoft); color:var(--purpleDark); width:28px; height:28px; border-radius:8px;
+    display:flex; align-items:center; justify-content:center; font-size:14px;}
+  .section-title h2{font-size:15px; font-weight:600; color:var(--purpleDark); margin:0;}
+  .card{background:#fff; border:1px solid var(--greyLine); border-radius:12px; padding:16px;}
+  .stat-row{display:flex; flex-wrap:wrap; gap:12px;}
+  .stat{flex:1; min-width:160px; border-radius:12px; padding:14px 16px;}
+  .stat .v{font-size:24px; font-weight:700;}
+  .stat .l{font-size:11px; color:var(--textMuted); margin-top:4px;}
+  .stat .s{font-size:11px; margin-top:2px;}
+  .stat.neutral{background:#fff; border:1px solid var(--greyLine);}
+  .stat.good{background:var(--greenSoft);} .stat.good .v,.stat.good .s{color:var(--green);}
+  .stat.bad{background:var(--redSoft);} .stat.bad .v,.stat.bad .s{color:var(--red);}
+  .stat.accent{background:var(--purpleSoft);} .stat.accent .v,.stat.accent .s{color:var(--purpleDark);}
+  table{width:100%; border-collapse:collapse; font-size:13px;}
+  thead tr{background:var(--purple);}
+  thead th{color:#fff; text-align:left; padding:8px 10px; font-size:12px; font-weight:500; white-space:nowrap;}
+  tbody td{padding:8px 10px; border-top:1px solid var(--greyLine);}
+  tbody tr:nth-child(even){background:var(--grey);}
+  tbody tr.alert-row{background:var(--amberSoft) !important;}
+  tbody tr.clickable{cursor:pointer;}
+  .badge{display:inline-flex; align-items:center; gap:4px; padding:2px 9px; border-radius:999px; font-size:12px; font-weight:500;}
+  .badge.OK{background:var(--greenSoft); color:var(--green);}
+  .badge.KO{background:var(--redSoft); color:var(--red);}
+  .badge.atraiter{background:var(--amberSoft); color:var(--amber);}
+  .btn{display:inline-flex; align-items:center; gap:7px; padding:10px 16px; border-radius:10px; font-size:14px;
+    font-weight:500; border:1px solid var(--greyLine); background:#fff; cursor:pointer; color:var(--text);}
+  .btn.primary{background:var(--purple); color:#fff; border-color:var(--purple);}
+  .btn.outline{border-color:var(--purple); color:var(--purpleDark); background:#fff;}
+  .btn:disabled{opacity:.4; cursor:not-allowed;}
+  input[type=text],input[type=date],select,textarea{
+    font-size:13px; border:1px solid var(--greyLine); border-radius:8px; padding:7px 9px; font-family:inherit;}
+  .filters{display:flex; flex-wrap:wrap; gap:8px; align-items:center; background:#fff; border:1px solid var(--greyLine);
+    border-radius:12px; padding:12px;}
+  .search-box{display:flex; align-items:center; gap:6px; background:var(--grey); border-radius:8px; padding:7px 10px; flex:1; min-width:220px;}
+  .search-box input{border:none; background:none; outline:none; font-size:13px; width:100%;}
+  .drop{border:2px dashed var(--purple); border-radius:12px; padding:16px; display:flex; align-items:center;
+    justify-content:center; gap:8px; font-size:14px; font-weight:500; color:var(--purpleDark); cursor:pointer;}
+  .notice{border-radius:12px; padding:14px 16px; display:flex; gap:10px; align-items:flex-start; font-size:13px;}
+  .notice.info{background:var(--purpleSoft); color:var(--text);}
+  .notice.warn{background:var(--amberSoft); color:var(--text);}
+  .notice .ic{flex-shrink:0; margin-top:1px;}
+  .status-msg{font-size:13px; padding:8px 12px; border-radius:8px; margin-top:10px;}
+  .status-msg.ok{background:var(--greenSoft); color:var(--green);}
+  .status-msg.err{background:var(--redSoft); color:var(--red);}
+  .detail-panel{background:var(--purpleSoft); padding:16px 18px;}
+  .detail-grid{display:grid; grid-template-columns:1fr 1fr; gap:20px;}
+  @media (max-width:760px){.detail-grid{grid-template-columns:1fr;}}
+  .field-label{font-size:12px; font-weight:600; color:var(--purpleDark); margin:0 0 4px;}
+  .field-value{font-size:13px; margin-bottom:10px;}
+  .modal-overlay{position:fixed; inset:0; background:rgba(0,0,0,.4); display:flex; align-items:center;
+    justify-content:center; padding:16px; z-index:50;}
+  .modal{background:#fff; border-radius:12px; padding:20px; width:100%; max-width:480px; max-height:85vh; overflow-y:auto;}
+  .modal h3{margin:0 0 14px; color:var(--purpleDark); font-size:15px;}
+  .modal-close-row{display:flex; justify-content:space-between; align-items:center;}
+  .field-stack > *{width:100%; margin-bottom:10px; display:block;}
+  .divider-row{display:flex; align-items:center; gap:10px; margin:18px 0;}
+  .divider-row .line{flex:1; height:1px; background:var(--greyLine);}
+  .divider-row span{font-size:12px; color:var(--textMuted);}
+  .footer{text-align:center; font-size:11px; color:var(--textMuted); padding:16px 0;}
+  code{background:var(--grey); padding:1px 5px; border-radius:4px; font-size:12px;}
+  .truncate{white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:280px; display:inline-block; vertical-align:bottom;}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, Fragment } = React;
+
+/* ============================================================
+   CONSTANTES
+   ============================================================ */
+const INDICATEURS = [
+  "Hubicus Voix", "Hubicus Mail", "Conformité Process (Auchan)",
+  "Conformité Process (Interne)", "Conformité Transfert", "NCC / Satisfaction Client",
+];
+const SERIES_COLORS = ["#96408F", "#B06BAA", "#C98A1E", "#7A8FBD", "#5FA8A0", "#3CA06E"];
+const MANAGERS = ["Christopha", "Haingo Fi", "Ibra", "Rojo", "À confirmer", "Non trouvé"];
+const STATUTS = ["À traiter", "OK", "KO"];
+const STORAGE_KEY_ECARTS = "tersea_dashboard_ecarts";
+const STORAGE_KEY_WEEKLY = "tersea_dashboard_weekly";
+
+/* ============================================================
+   DONNÉES INITIALES (S25 à S28, Site Mada)
+   ============================================================ */
+const SEED_ECARTS = [
+  { id: 1, indicateur: "Hubicus Voix", conseiller: "Carine", reference: "019f2c57-9014-46ca-95f1-78e22444b017", semaine: "S28", date: "2026-07-06", ecart: "Note = 0.0% (objectif 85%)", statut: "OK", action: "Contestation de la SI car la CC a parlé à la 4e minute", dateDebrief: "2026-07-07", constat: "SI : présentation Auchan trop tardive (5 min).", managerDispatch: "Christopha", manager: "Christopha", alerte: "" },
+  { id: 2, indicateur: "Hubicus Voix", conseiller: "Judiannah", reference: "019f35f4-c320-483f-aee0-79268d4b87f1", semaine: "S28", date: "2026-07-06", ecart: "Note = 0.0% (objectif 85%)", statut: "OK", action: "Explication de l'impact de l'accueil tardif ; partage de la liste des SI", dateDebrief: "2026-07-07", constat: "Présentation trop tardive (7 min, SI) ; identification incomplète ; personnalisation limitée ; manque d'écoute active.", managerDispatch: "Christopha", manager: "Christopha", alerte: "" },
+  { id: 3, indicateur: "Hubicus Voix", conseiller: "Rosa", reference: "019f3692-efda-4ec9-90fa-a6a44b50cce2", semaine: "S28", date: "2026-07-06", ecart: "Note = 0.0% (objectif 85%)", statut: "À traiter", action: "Débrief à réaliser // TA excessif sans aucune action faite", dateDebrief: "2026-07-09", constat: "Temps d'attente excessif : 0'25 à 3'46 avant prise en charge.", managerDispatch: "Ibra", manager: "Ibra", alerte: "" },
+  { id: 4, indicateur: "Hubicus Voix", conseiller: "Tsiaro", reference: "019f2dfc-f112-4bb5-8c1e-95654b903f60", semaine: "S28", date: "2026-07-06", ecart: "Note = 42.9% (objectif 85%)", statut: "OK", action: "Rappel de la grille effectué / sensibilisation", dateDebrief: "2026-07-09", constat: "Pas d'ouverture téléphonique ; prise en charge insuffisante ; reformulation non réalisée ; absence de fiabilisation.", managerDispatch: "Ibra", manager: "Ibra", alerte: "" },
+  { id: 5, indicateur: "Hubicus Voix", conseiller: "Sombiniaina", reference: "019f37e4-81e4-4282-80be-c4023d70ed47", semaine: "S28", date: "2026-07-06", ecart: "Note = 71.4% (objectif 85%)", statut: "OK", action: "Rappel de la grille effectué / sensibilisation sur les blancs en cours d'appel", dateDebrief: "2026-07-09", constat: "Reformulation non réalisée ; absence de personnalisation ; manque d'écoute active ; absence de fiabilisation.", managerDispatch: "Ibra", manager: "Ibra", alerte: "" },
+  { id: 6, indicateur: "Hubicus Voix", conseiller: "Eric", reference: "019f375a-9dcc-4a6a-ab10-97915f8003b4", semaine: "S28", date: "2026-07-06", ecart: "Note = 77.1% (objectif 85%)", statut: "À traiter", action: "Debrief à réaliser // Refresh sur la grille à faire", dateDebrief: "2026-07-09", constat: "Prise en charge de la demande non réalisée ; reformulation non réalisée ; absence de personnalisation.", managerDispatch: "Ibra", manager: "Ibra", alerte: "" },
+  { id: 7, indicateur: "Hubicus Voix", conseiller: "Alex", reference: "019f365e-2d35-4cc1-aeeb-8af5a63c65af", semaine: "S28", date: "2026-07-08", ecart: "Note = 83.3% (objectif 85%)", statut: "À traiter", action: "Debrief à réaliser // Refresh sur la grille à faire", dateDebrief: "2026-07-09", constat: "Reformulation « perroquet » ; absence de personnalisation ; reprise de garde non personnalisée.", managerDispatch: "Ibra", manager: "Ibra", alerte: "" },
+  { id: 8, indicateur: "Hubicus Voix", conseiller: "Jacky", reference: "019f40ed-4058-4e60-859e-17e0a2301a30", semaine: "S28", date: "2026-07-08", ecart: "Note = 0.0% (objectif 85%)", statut: "À traiter", action: "", dateDebrief: "", constat: "SI : présentation trop tardive ; reformulation non réalisée ; manque d'écoute active ; absence de fiabilisation.", managerDispatch: "Non trouvé dans le dispatch Juillet", manager: "Non trouvé", alerte: "" },
+  { id: 9, indicateur: "Hubicus Voix", conseiller: "Avotra", reference: "019f41bf-b3d6-4ab1-9f3e-55fe8133d8f3", semaine: "S28", date: "2026-07-08", ecart: "Note = 0.0% (objectif 85%)", statut: "À traiter", action: "", dateDebrief: "", constat: "SI : réponse du conseiller jugée impactante pour l'image de la marque.", managerDispatch: "Rojo ou Ibra (2 candidats homonymes)", manager: "À confirmer", alerte: "" },
+  { id: 10, indicateur: "Hubicus Voix", conseiller: "Tsiaro", reference: "019f4634-dd90-4b7f-914b-71d485b4a970", semaine: "S28", date: "2026-07-09", ecart: "Note = 0.0% (objectif 85%)", statut: "À traiter", action: "", dateDebrief: "", constat: "SI : client raccroché pendant le temps d'attente (délai dépassé).", managerDispatch: "Ibra", manager: "Ibra", alerte: "" },
+  { id: 11, indicateur: "Hubicus Mail", conseiller: "Alex", reference: "18824428", semaine: "S28", date: "2026-07-08", ecart: "Note = 79.0% (objectif 85%)", statut: "À traiter", action: "Debrief à réaliser // Grille mail à revoir", dateDebrief: "2026-07-09", constat: "Objet de l'email trop générique ; message d'allié client peu personnalisé ; mise en page insuffisante.", managerDispatch: "Ibra", manager: "Ibra", alerte: "" },
+  { id: 12, indicateur: "Conformité Process (Auchan)", conseiller: "Kenny", reference: "18769226 · réf. appel : 019f132d-d228-49da-ad83-5686cf7b4d3a", semaine: "S27", date: "2026-06-29", ecart: "Statut global = SI — Hyper : livraison", statut: "KO", action: "Sortie de l'agent", dateDebrief: "", constat: "KO historisation. Promets un geste co : rien dans AROM + pas de tâche.", managerDispatch: "Non trouvé dans le dispatch Juillet", manager: "Non trouvé", alerte: "" },
+  { id: 13, indicateur: "Conformité Process (Auchan)", conseiller: "Nomena", reference: "18775568 · réf. appel : 019f15e5-70d1-43f9-879c-7fba0e1dd7bd", semaine: "S27", date: "2026-06-30", ecart: "Statut global = KO — Drive : chartre fraîcheur", statut: "À traiter", action: "", dateDebrief: "", constat: "Le conseiller n'a pas proposé un geste commercial suffisant.", managerDispatch: "Christopha ou Haingo Fi (2 candidats)", manager: "À confirmer", alerte: "" },
+  { id: 14, indicateur: "Conformité Process (Auchan)", conseiller: "Romeo", reference: "18694806 (contact mail, pas de réf. appel)", semaine: "S27", date: "2026-06-29", ecart: "Statut global = KO — AFR : double facturation", statut: "KO", action: "Sortie de l'agent", dateDebrief: "", constat: "Le montant du remboursement n'a pas été indiqué au client.", managerDispatch: "Non trouvé dans le dispatch Juillet", manager: "Non trouvé", alerte: "" },
+  { id: 15, indicateur: "Conformité Process (Auchan)", conseiller: "Anna", reference: "réf. appel : 019f320f-c9ad-4a0d-8310-e512c7c07c1e (cas BCN)", semaine: "S27", date: "2026-07-05", ecart: "Statut global = SI — BCN : appel raccourci", statut: "À traiter", action: "", dateDebrief: "", constat: "L'appel dure 19 secondes ; le conseiller aurait dû prendre la parole.", managerDispatch: "Haingo Fi", manager: "Haingo Fi", alerte: "" },
+  { id: 16, indicateur: "Conformité Process (Auchan)", conseiller: "Rosa", reference: "18814318 (contact mail)", semaine: "S28 (partiel)", date: "2026-07-08", ecart: "Statut global = SI — Drive : relance remboursement", statut: "À traiter", action: "Débrief à réaliser", dateDebrief: "2026-07-09", constat: "C'était à la conseillère de prendre en charge ; elle transfère au magasin.", managerDispatch: "Ibra", manager: "Ibra", alerte: "⚠ 2e SI de la semaine (même conseillère)" },
+  { id: 17, indicateur: "Conformité Process (Auchan)", conseiller: "Rosa", reference: "18824630 · réf. appel : 019f3c32-2d1f-45e3-b3f6-18de0c6fc017", semaine: "S28 (partiel)", date: "2026-07-07", ecart: "Statut global = SI — AFR : suivi commande", statut: "À traiter", action: "", dateDebrief: "", constat: "La conseillère aurait dû rappeler le client dans le cadre du suivi.", managerDispatch: "Ibra", manager: "Ibra", alerte: "⚠ 2e SI de la semaine (même conseillère)" },
+  { id: 18, indicateur: "Conformité Process (Interne)", conseiller: "Fitiavana", reference: "18146309 (réf. appel non renseignée)", semaine: "S26", date: "2026-06-26", ecart: "Statut global = SI — Signalement d'article manquant", statut: "KO", action: "Sortie de l'agent", dateDebrief: "", constat: "Le délai de remboursement communiqué au client est erroné.", managerDispatch: "Non trouvé dans le dispatch Juillet", manager: "Non trouvé", alerte: "" },
+  { id: 19, indicateur: "Conformité Process (Interne)", conseiller: "LOLA", reference: "18136286 · réf. appel : 019d2440-b308-4341-9085-ed59f5783341", semaine: "S26", date: "2026-06-26", ecart: "Statut global = KO — Signalement d'article manquant", statut: "À traiter", action: "Rappel sur la nécessité de communiquer l'exactitude des réponses", dateDebrief: "", constat: "Le délai de remboursement n'est pas communiqué à la cliente.", managerDispatch: "Rojo", manager: "Rojo", alerte: "" },
+  { id: 20, indicateur: "Conformité Transfert", conseiller: "Aminata", reference: "18657504 · réf. appel : 019ebb50-ec18-4b72-b493-ade1d2d25199", semaine: "S25", date: "2026-06-15", ecart: "Non conforme — Disponibilité de produit", statut: "KO", action: "Sortie de l'agent", dateDebrief: "", constat: "La demande n'a pas été identifiée avant d'être transférée dans la file du magasin.", managerDispatch: "Non trouvé dans le dispatch Juillet", manager: "Non trouvé", alerte: "" },
+  { id: 21, indicateur: "Conformité Transfert", conseiller: "ERIC", reference: "18666897 · réf. appel : 019ec208-c412-4dd3-a500-788647f1946b", semaine: "S25", date: "2026-06-15", ecart: "Non conforme — Retour de produit", statut: "À traiter", action: "Rappel sur les règles de transfert", dateDebrief: "", constat: "La demande n'a pas été identifiée avant d'être transférée.", managerDispatch: "Ibra", manager: "Ibra", alerte: "" },
+  { id: 22, indicateur: "Conformité Transfert", conseiller: "ERIC", reference: "18665398 (réf. appel non trouvée)", semaine: "S25", date: "2026-06-15", ecart: "Non conforme — Objet perdu", statut: "À traiter", action: "Rappel sur les règles de transfert", dateDebrief: "", constat: "La demande n'a pas été identifiée ; contact via une seconde file requis.", managerDispatch: "Ibra", manager: "Ibra", alerte: "" },
+  { id: 23, indicateur: "Conformité Transfert", conseiller: "ERIC", reference: "18662411 (réf. appel non trouvée)", semaine: "S25", date: "2026-06-15", ecart: "Non conforme — Disponibilité de produit", statut: "À traiter", action: "Mauvais geste métier", dateDebrief: "", constat: "Aucun contact vers le magasin avant la mise en file d'attente.", managerDispatch: "Ibra", manager: "Ibra", alerte: "" },
+  { id: 24, indicateur: "Conformité Transfert", conseiller: "ERIC", reference: "18664322 (réf. appel non trouvée)", semaine: "S25", date: "2026-06-15", ecart: "Non conforme — Réclamation sur un produit", statut: "À traiter", action: "", dateDebrief: "", constat: "Demande mise dans la mauvaise file ; réclamation concernant un autre magasin.", managerDispatch: "Ibra", manager: "Ibra", alerte: "" },
+  { id: 25, indicateur: "Conformité Transfert", conseiller: "HANITRA", reference: "18662270 · réf. appel : 019ebd7e-d285-4a45-9269-6fa2e83d375d", semaine: "S25", date: "2026-06-15", ecart: "Non conforme — Suivi de livraison", statut: "À traiter", action: "", dateDebrief: "", constat: "Aucun contact du magasin initié avant la transmission.", managerDispatch: "Haingo Fi", manager: "Haingo Fi", alerte: "" },
+  { id: 26, indicateur: "Conformité Transfert", conseiller: "HANITRA", reference: "18657748 · réf. appel : 019ebb6f-8d5b-4873-9d28-54af8bf0072c", semaine: "S25", date: "2026-06-15", ecart: "Non conforme — Disponibilité d'article", statut: "À traiter", action: "", dateDebrief: "", constat: "Règle de transfert non respectée : contact accueil uniquement.", managerDispatch: "Haingo Fi", manager: "Haingo Fi", alerte: "" },
+  { id: 27, indicateur: "Conformité Transfert", conseiller: "HANITRA", reference: "18657662 (réf. appel non trouvée)", semaine: "S25", date: "2026-06-15", ecart: "Non conforme — Mise en relation RH", statut: "À traiter", action: "", dateDebrief: "", constat: "Erreur process : SVI collaborateur à communiquer.", managerDispatch: "Haingo Fi", manager: "Haingo Fi", alerte: "" },
+  { id: 28, indicateur: "Conformité Transfert", conseiller: "Huguette", reference: "18611290 (contact mail)", semaine: "S25", date: "2026-06-15", ecart: "Non conforme — Qualité alimentaire", statut: "KO", action: "Sortie de l'agent", dateDebrief: "", constat: "Fiche conso à remplir ; informations d'achat disponibles à notre niveau.", managerDispatch: "Non trouvé dans le dispatch Juillet", manager: "Non trouvé", alerte: "" },
+  { id: 29, indicateur: "Conformité Transfert", conseiller: "Huguette", reference: "18656397 · réf. appel : 019ebb0e-aa13-490a-a326-a09f90e983eb", semaine: "S25", date: "2026-06-15", ecart: "Non conforme — Mise en relation directeur", statut: "À traiter", action: "", dateDebrief: "", constat: "Aucun contact du magasin effectué.", managerDispatch: "Christopha", manager: "Christopha", alerte: "" },
+  { id: 30, indicateur: "Conformité Transfert", conseiller: "Huguette", reference: "18666921 (réf. appel non trouvée)", semaine: "S25", date: "2026-06-15", ecart: "Non conforme — Décalage récupération commande", statut: "À traiter", action: "", dateDebrief: "", constat: "Aucune tentative de contact du Drive effectuée.", managerDispatch: "Christopha", manager: "Christopha", alerte: "" },
+  { id: 31, indicateur: "Conformité Transfert", conseiller: "Nomena", reference: "18672582 (réf. appel non trouvée)", semaine: "S25", date: "2026-06-16", ecart: "Non conforme — Disponibilité de produit", statut: "À traiter", action: "", dateDebrief: "", constat: "Contact de l'accueil en premier lieu au lieu du bon rayon.", managerDispatch: "Christopha ou Haingo Fi (2 candidats)", manager: "À confirmer", alerte: "" },
+  { id: 32, indicateur: "Conformité Transfert", conseiller: "Nomena", reference: "18671335 (contact mail)", semaine: "S25", date: "2026-06-16", ecart: "Non conforme — Litige à la réception", statut: "À traiter", action: "", dateDebrief: "", constat: "La demande est traitable au niveau de l'agent directement.", managerDispatch: "Christopha ou Haingo Fi (2 candidats)", manager: "À confirmer", alerte: "" },
+  { id: 33, indicateur: "Conformité Transfert", conseiller: "Nomena", reference: "18671183 (contact mail)", semaine: "S25", date: "2026-06-16", ecart: "Non conforme — Candidature", statut: "À traiter", action: "", dateDebrief: "", constat: "La procédure aurait dû être communiquée directement au client.", managerDispatch: "Christopha ou Haingo Fi (2 candidats)", manager: "À confirmer", alerte: "" },
+  { id: 34, indicateur: "Conformité Transfert", conseiller: "Nomena", reference: "18670940 (contact mail)", semaine: "S25", date: "2026-06-16", ecart: "Non conforme — Articles manquants", statut: "À traiter", action: "", dateDebrief: "", constat: "Demande traitable au niveau de l'agent en questionnant le client.", managerDispatch: "Christopha ou Haingo Fi (2 candidats)", manager: "À confirmer", alerte: "" },
+  { id: 35, indicateur: "Conformité Transfert", conseiller: "Nomena", reference: "18670783 (contact mail)", semaine: "S25", date: "2026-06-16", ecart: "Non conforme — Promotion non appliquée", statut: "À traiter", action: "", dateDebrief: "", constat: "Produits éligibles aux 10% cagnottés visibles à notre niveau.", managerDispatch: "Christopha ou Haingo Fi (2 candidats)", manager: "À confirmer", alerte: "" },
+  { id: 36, indicateur: "Conformité Transfert", conseiller: "Nomena", reference: "18670293 · réf. appel : 019eca6d-54c2-4621-bb77-898c7d777eb3", semaine: "S25", date: "2026-06-16", ecart: "Non conforme — Décalage récupération commande", statut: "À traiter", action: "", dateDebrief: "", constat: "Mauvaise file contactée : accueil du magasin au lieu du Drive.", managerDispatch: "Christopha ou Haingo Fi (2 candidats)", manager: "À confirmer", alerte: "" },
+  { id: 37, indicateur: "Conformité Transfert", conseiller: "Nomena", reference: "18668606 (contact mail)", semaine: "S25", date: "2026-06-16", ecart: "Non conforme — Produit expiré", statut: "À traiter", action: "", dateDebrief: "", constat: "Traitement faisable au niveau de l'agent directement.", managerDispatch: "Christopha ou Haingo Fi (2 candidats)", manager: "À confirmer", alerte: "" },
+  { id: 38, indicateur: "Conformité Transfert", conseiller: "Tony", reference: "18672885 (contact mail)", semaine: "S25", date: "2026-06-16", ecart: "Non conforme — Articles manquants", statut: "À traiter", action: "", dateDebrief: "", constat: "Rien ne justifie le transfert vers le super.", managerDispatch: "Non trouvé dans le dispatch Juillet", manager: "Non trouvé", alerte: "" },
+  { id: 39, indicateur: "Conformité Transfert", conseiller: "Tony", reference: "18669236 · réf. appel : 019eca51-7e59-4130-943c-ab9e04d78ae3", semaine: "S25", date: "2026-06-16", ecart: "Non conforme — Promotion non appliquée", statut: "À traiter", action: "", dateDebrief: "", constat: "Le gestionnaire aurait dû être sollicité pour vérifier l'effectivité.", managerDispatch: "Non trouvé dans le dispatch Juillet", manager: "Non trouvé", alerte: "" },
+  { id: 40, indicateur: "Conformité Transfert", conseiller: "Tony", reference: "18669204 (réf. appel non trouvée)", semaine: "S25", date: "2026-06-16", ecart: "Non conforme — Mise en relation", statut: "À traiter", action: "", dateDebrief: "", constat: "Une seule tentative de contact du magasin.", managerDispatch: "Non trouvé dans le dispatch Juillet", manager: "Non trouvé", alerte: "" },
+  { id: 41, indicateur: "NCC / Satisfaction Client", conseiller: "Sylvia", reference: "18817530", semaine: "S28 (partiel, Mada)", date: "", ecart: "Note client = 2/10 — qualité de la réponse", statut: "OK", action: "Traitement OK", dateDebrief: "2026-07-08", constat: "Client mécontent du temps perdu ; produit à DLC courte livré le jour même.", managerDispatch: "Rojo", manager: "Rojo", alerte: "" },
+  { id: 42, indicateur: "NCC / Satisfaction Client", conseiller: "Rojo", reference: "18679995", semaine: "S28 (partiel, Mada)", date: "", ecart: "Note client = 1/10 — qualité de la réponse", statut: "OK", action: "Mauvais traitement réalisé", dateDebrief: "2026-07-08", constat: "Demande de contact magasin restée sans suite ; aucun rappel reçu.", managerDispatch: "Rojo", manager: "Rojo", alerte: "" },
+  { id: 43, indicateur: "NCC / Satisfaction Client", conseiller: "Huguette", reference: "18817789", semaine: "S28 (partiel, Mada)", date: "", ecart: "Note client = 1/10 — qualité de la réponse", statut: "À traiter", action: "", dateDebrief: "", constat: "Pas de commentaire client renseigné.", managerDispatch: "Christopha", manager: "Christopha", alerte: "" },
+  { id: 44, indicateur: "NCC / Satisfaction Client", conseiller: "Rosa", reference: "18810320", semaine: "S28 (partiel, Mada)", date: "", ecart: "Note client = 3/10 — compréhension de la demande", statut: "À traiter", action: "Debrief à réaliser", dateDebrief: "", constat: "Aucune réponse apportée avant fermeture de la demande.", managerDispatch: "Ibra", manager: "Ibra", alerte: "" },
+  { id: 45, indicateur: "NCC / Satisfaction Client", conseiller: "Mihanta", reference: "18787267", semaine: "S28 (partiel, Mada)", date: "", ecart: "Note client = 2/10 — qualité de la réponse", statut: "À traiter", action: "Débrief à réaliser // Geste métier à revoir", dateDebrief: "", constat: "Client indique avoir résolu son problème en 5 min au magasin.", managerDispatch: "Haingo Fi", manager: "Haingo Fi", alerte: "" },
+  { id: 46, indicateur: "NCC / Satisfaction Client", conseiller: "Angela", reference: "18767641", semaine: "S28 (partiel, Mada)", date: "", ecart: "Note client = 0/10 — qualité de la réponse", statut: "À traiter", action: "Débrief à réaliser // Geste métier à revoir", dateDebrief: "", constat: "Commande annulée (1500€) puis rétablie sans explication claire.", managerDispatch: "Ibra", manager: "Ibra", alerte: "⚠ 4 signalements NCC cette semaine (même conseillère)" },
+  { id: 47, indicateur: "NCC / Satisfaction Client", conseiller: "Harizo", reference: "18824412", semaine: "S28 (partiel, Mada)", date: "", ecart: "Note client = 0/10 — compréhension de la demande", statut: "À traiter", action: "Débrief à réaliser // Appel sortant à réaliser", dateDebrief: "", constat: "Pas de commentaire client renseigné.", managerDispatch: "Haingo Fi", manager: "Haingo Fi", alerte: "" },
+  { id: 48, indicateur: "NCC / Satisfaction Client", conseiller: "Rosa", reference: "18808070", semaine: "S28 (partiel, Mada)", date: "", ecart: "Note client = 1/10 — qualité de la réponse", statut: "À traiter", action: "Débrief à réaliser", dateDebrief: "", constat: "Pas de commentaire client renseigné.", managerDispatch: "Ibra", manager: "Ibra", alerte: "" },
+  { id: 49, indicateur: "NCC / Satisfaction Client", conseiller: "Angela", reference: "18825633", semaine: "S28 (partiel, Mada)", date: "", ecart: "Note client = 0/10 — respect des promesses", statut: "À traiter", action: "Debrief à réaliser // Process à revoir", dateDebrief: "", constat: "Chat en ligne jugé inefficace ; aucune promesse de suivi tenue.", managerDispatch: "Ibra", manager: "Ibra", alerte: "⚠ 4 signalements NCC cette semaine (même conseillère)" },
+  { id: 50, indicateur: "NCC / Satisfaction Client", conseiller: "Avotra", reference: "18806956", semaine: "S28 (partiel, Mada)", date: "", ecart: "Note client = 0/10 — qualité de la réponse", statut: "À traiter", action: "Debrief à réaliser // Manque de vérification", dateDebrief: "", constat: "Aucune action réalisée malgré un dossier classé comme traité.", managerDispatch: "Rojo ou Ibra (2 candidats)", manager: "À confirmer", alerte: "" },
+  { id: 51, indicateur: "NCC / Satisfaction Client", conseiller: "Angela", reference: "18826152", semaine: "S28 (partiel, Mada)", date: "", ecart: "Note client = 0/10 — qualité de la réponse", statut: "À traiter", action: "Débrief à réaliser // Manque de vérification", dateDebrief: "", constat: "Déni de responsabilité sur l'annulation de commande.", managerDispatch: "Ibra", manager: "Ibra", alerte: "⚠ 4 signalements NCC cette semaine (même conseillère)" },
+  { id: 52, indicateur: "NCC / Satisfaction Client", conseiller: "Angela", reference: "18828203", semaine: "S28 (partiel, Mada)", date: "", ecart: "Note client = 1/10 — compréhension de la demande", statut: "À traiter", action: "Débrief à réaliser // Mauvais geste métier", dateDebrief: "", constat: "Client indique ne plus vouloir formuler de remarques.", managerDispatch: "Ibra", manager: "Ibra", alerte: "⚠ 4 signalements NCC cette semaine (même conseillère)" },
+  { id: 53, indicateur: "NCC / Satisfaction Client", conseiller: "Mickael", reference: "18823367", semaine: "S28 (partiel, Mada)", date: "", ecart: "Note client = 2/10 — qualité de la réponse", statut: "OK", action: "Process et geste métier revus avec l'agent", dateDebrief: "2026-07-09", constat: "Problème de cagnotte carte non résolu par téléphone.", managerDispatch: "Ibra", manager: "Non trouvé", alerte: "" },
+  { id: 54, indicateur: "NCC / Satisfaction Client", conseiller: "Sombiniaina", reference: "18828122", semaine: "S28 (partiel, Mada)", date: "", ecart: "Note client = 3/10 — compréhension de la demande", statut: "OK", action: "Geste métier et prise en charge de l'émotion rappelés", dateDebrief: "2026-07-09", constat: "Remboursement effectué mais sans geste commercial malgré risque sanitaire.", managerDispatch: "Ibra", manager: "Ibra", alerte: "" },
+];
+
+const SEED_WEEKLY = [
+  { semaine: "S19", "Hubicus Voix": null, "Hubicus Mail": null, "Conformité Process (Auchan)": null, "Conformité Process (Interne)": null, "Conformité Transfert": 60, "NCC / Satisfaction Client": null },
+  { semaine: "S20", "Hubicus Voix": null, "Hubicus Mail": null, "Conformité Process (Auchan)": null, "Conformité Process (Interne)": null, "Conformité Transfert": 48, "NCC / Satisfaction Client": null },
+  { semaine: "S21", "Hubicus Voix": null, "Hubicus Mail": null, "Conformité Process (Auchan)": 50, "Conformité Process (Interne)": 58, "Conformité Transfert": 65, "NCC / Satisfaction Client": null },
+  { semaine: "S22", "Hubicus Voix": null, "Hubicus Mail": null, "Conformité Process (Auchan)": 86, "Conformité Process (Interne)": null, "Conformité Transfert": 68, "NCC / Satisfaction Client": null },
+  { semaine: "S23", "Hubicus Voix": 72, "Hubicus Mail": 67, "Conformité Process (Auchan)": 71, "Conformité Process (Interne)": 52, "Conformité Transfert": null, "NCC / Satisfaction Client": 79 },
+  { semaine: "S24", "Hubicus Voix": 81, "Hubicus Mail": 85, "Conformité Process (Auchan)": 80, "Conformité Process (Interne)": 77, "Conformité Transfert": null, "NCC / Satisfaction Client": 89 },
+  { semaine: "S25", "Hubicus Voix": 76, "Hubicus Mail": 55, "Conformité Process (Auchan)": 71, "Conformité Process (Interne)": 64, "Conformité Transfert": 62, "NCC / Satisfaction Client": 82 },
+  { semaine: "S26", "Hubicus Voix": 80, "Hubicus Mail": 97, "Conformité Process (Auchan)": 40, "Conformité Process (Interne)": 67, "Conformité Transfert": null, "NCC / Satisfaction Client": 82 },
+  { semaine: "S27", "Hubicus Voix": 86, "Hubicus Mail": 70, "Conformité Process (Auchan)": 43, "Conformité Process (Interne)": null, "Conformité Transfert": null, "NCC / Satisfaction Client": 82 },
+  { semaine: "S28", "Hubicus Voix": 75, "Hubicus Mail": 97, "Conformité Process (Auchan)": 33, "Conformité Process (Interne)": null, "Conformité Transfert": null, "NCC / Satisfaction Client": 75 },
+];
+/* NCC est stocké ×10 dans l'historique (ex: 8.2/10 -> 82) pour partager l'échelle 0-100 avec les autres indicateurs. */
+
+/* ============================================================
+   UTILITAIRES
+   ============================================================ */
+function uid(){ return Date.now() + Math.floor(Math.random()*100000); }
+
+async function waitForFirebase(){
+  let tries = 0;
+  while (!window.__firebaseReady && tries < 200) {
+    await new Promise((r) => setTimeout(r, 25));
+    tries++;
+  }
+}
+
+async function fsLoad(key, fallback){
+  await waitForFirebase();
+  if (!window.__firebaseConfigured) return { value: fallback, status: "unconfigured" };
+  if (window.__firebaseError || !window.__fb) return { value: fallback, status: "error", error: window.__firebaseError };
+  try {
+    const ref = window.__fb.doc(window.__fb.db, "dashboard", key);
+    const snap = await window.__fb.getDoc(ref);
+    if (snap.exists() && snap.data().payload) return { value: snap.data().payload, status: "ok" };
+    return { value: fallback, status: "ok" };
+  } catch (e) {
+    return { value: fallback, status: "error", error: e.message };
+  }
+}
+
+async function fsSave(key, value){
+  if (!window.__firebaseConfigured || window.__firebaseError || !window.__fb) return false;
+  try {
+    const ref = window.__fb.doc(window.__fb.db, "dashboard", key);
+    await window.__fb.setDoc(ref, { payload: value, updatedAt: new Date().toISOString() });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function fsSubscribe(key, onChange){
+  if (!window.__firebaseConfigured || window.__firebaseError || !window.__fb) return () => {};
+  try {
+    const ref = window.__fb.doc(window.__fb.db, "dashboard", key);
+    return window.__fb.onSnapshot(ref, (snap) => {
+      if (snap.exists() && snap.data().payload) onChange(snap.data().payload);
+    });
+  } catch (e) {
+    return () => {};
+  }
+}
+
+function computeIndicatorStats(ecarts){
+  return INDICATEURS.map((ind) => {
+    const rows = ecarts.filter((e) => e.indicateur === ind);
+    const done = rows.filter((r) => r.statut === "OK" || r.statut === "KO").length;
+    return { indicateur: ind, total: rows.length, done, taux: rows.length ? Math.round((done/rows.length)*1000)/10 : 0 };
+  });
+}
+function computeManagerStats(ecarts){
+  return MANAGERS.map((m) => {
+    const rows = ecarts.filter((e) => e.manager === m);
+    const done = rows.filter((r) => r.statut === "OK" || r.statut === "KO").length;
+    return { manager: m, total: rows.length, done, taux: rows.length ? Math.round((done/rows.length)*1000)/10 : 0 };
+  }).filter((m) => m.total > 0);
+}
+function downloadBlob(content, filename, type){
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+function exportCSV(rows, filename){
+  const csv = Papa.unparse(rows);
+  downloadBlob(csv, filename, "text/csv;charset=utf-8;");
+}
+function exportExcel(ecarts, weekly){
+  const wb = XLSX.utils.book_new();
+  const mainRows = ecarts.map((e,i) => ({
+    "N°": i+1, Indicateur: e.indicateur, Conseiller: e.conseiller, "Référence": e.reference,
+    Semaine: e.semaine, Date: e.date, "Écart constaté": e.ecart,
+    "Débriefing (OK/KO)": e.statut === "À traiter" ? "" : e.statut, "Action réalisée": e.action,
+    "Date du débriefing": e.dateDebrief, "Constat détaillé": e.constat,
+    "Manager (dispatch)": e.managerDispatch, "Manager (simplifié)": e.manager, "Alerte récurrence": e.alerte,
+  }));
+  const ws1 = XLSX.utils.json_to_sheet(mainRows);
+  ws1["!cols"] = [{wch:4},{wch:26},{wch:14},{wch:40},{wch:10},{wch:11},{wch:32},{wch:10},{wch:40},{wch:14},{wch:50},{wch:26},{wch:16},{wch:30}];
+  XLSX.utils.book_append_sheet(wb, ws1, "Suivi Débriefing");
+
+  const indStats = computeIndicatorStats(ecarts);
+  const mgrStats = computeManagerStats(ecarts);
+  const totalDone = ecarts.filter((e) => e.statut === "OK" || e.statut === "KO").length;
+  const reportRows = [
+    { Section: "Par indicateur" },
+    ...indStats.map((s) => ({ Indicateur: s.indicateur, "Nb en écart": s.total, "Nb débriefées": s.done, "Taux (%)": s.taux })),
+    {},
+    { Section: "Par manager" },
+    ...mgrStats.map((s) => ({ Manager: s.manager, "Nb en écart": s.total, "Nb débriefées": s.done, "Taux (%)": s.taux })),
+    {},
+    { "Total écarts": ecarts.length, "Total débriefées": totalDone, "Taux global (%)": ecarts.length ? Math.round((totalDone/ecarts.length)*1000)/10 : 0 },
+  ];
+  const ws2 = XLSX.utils.json_to_sheet(reportRows);
+  XLSX.utils.book_append_sheet(wb, ws2, "Reporting");
+  const ws3 = XLSX.utils.json_to_sheet(weekly);
+  XLSX.utils.book_append_sheet(wb, ws3, "Historique KPI");
+  XLSX.writeFile(wb, "Suivi_Debriefing_Manager.xlsx");
+}
+function exportForClaude(ecarts, weekly){
+  const payload = {
+    genere_le: new Date().toISOString(),
+    note: "Coller ce JSON dans une conversation Claude avec la consigne 'mets à jour le PowerPoint et l'Excel qualité avec ces données' pour régénérer les supports.",
+    ecarts, historique_kpi: weekly,
+  };
+  downloadBlob(JSON.stringify(payload, null, 2), "export_pour_claude.json", "application/json");
+}
+function statutClass(s){ return s === "OK" ? "OK" : s === "KO" ? "KO" : "atraiter"; }
+function statutGlyph(s){ return s === "OK" ? "✓" : s === "KO" ? "✕" : "○"; }
+function barColor(v){ return v >= 70 ? "var(--green)" : v >= 30 ? "var(--amber)" : "var(--red)"; }
+
+/* ============================================================
+   MINI GRAPHIQUES SVG (sans dépendance externe)
+   ============================================================ */
+function BarChartV({ data, labelKey, valueKey, height=250 }) {
+  const W = 640, H = height, padB = 70, padT = 24, padL = 10, padR = 10;
+  const innerH = H - padB - padT;
+  const bw = (W - padL - padR) / data.length;
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%", height}}>
+      <line x1={padL} y1={H-padB} x2={W-padR} y2={H-padB} stroke="var(--greyLine)" />
+      {[0,25,50,75,100].map((g) => (
+        <line key={g} x1={padL} x2={W-padR} y1={H-padB-(g/100)*innerH} y2={H-padB-(g/100)*innerH} stroke="#EFEDEF" />
+      ))}
+      {data.map((d, i) => {
+        const val = d[valueKey] || 0;
+        const barH = (val/100) * innerH;
+        const x = padL + i*bw + bw*0.15;
+        const w = bw*0.7;
+        const y = H - padB - barH;
+        return (
+          <g key={i}>
+            <rect x={x} y={y} width={w} height={barH} rx="4" fill={barColor(val)} />
+            <text x={x+w/2} y={y-6} fontSize="11" fontWeight="700" textAnchor="middle" fill="#241C29">{val}%</text>
+            <text x={x+w/2} y={H-padB+16} fontSize="10" textAnchor="middle" fill="#6B6270">
+              {String(d[labelKey]).length > 14 ? String(d[labelKey]).slice(0,13)+"…" : d[labelKey]}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function BarChartH({ data, labelKey, valueKey, height=220 }) {
+  const W = 640, H = height, padL = 96, padR = 46, rowH = (H-16) / data.length;
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%", height}}>
+      {data.map((d, i) => {
+        const val = d[valueKey] || 0;
+        const maxW = W - padL - padR;
+        const w = (val/100) * maxW;
+        const y = 8 + i*rowH;
+        return (
+          <g key={i}>
+            <text x={padL-8} y={y+rowH/2+4} fontSize="11" textAnchor="end" fill="#241C29">{d[labelKey]}</text>
+            <rect x={padL} y={y+rowH*0.2} width={maxW} height={rowH*0.6} fill="#F4F6F7" rx="4" />
+            <rect x={padL} y={y+rowH*0.2} width={w} height={rowH*0.6} fill={barColor(val)} rx="4" />
+            <text x={padL+w+8} y={y+rowH/2+4} fontSize="11" fontWeight="700" fill="#241C29">{val}%</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function LineChartMulti({ data, series, height=340 }) {
+  const W = 700, H = height, padL = 30, padR = 20, padT = 20, padB = 50;
+  const innerW = W - padL - padR, innerH = H - padT - padB;
+  const stepX = innerW / (data.length - 1 || 1);
+  const yFor = (v) => padT + innerH - (Math.max(0, Math.min(100, v))/100) * innerH;
+  const xFor = (i) => padL + i*stepX;
+
+  function pathFor(key){
+    let d = "";
+    let started = false;
+    data.forEach((row, i) => {
+      const v = row[key];
+      if (v === null || v === undefined) { started = false; return; }
+      const cmd = started ? "L" : "M";
+      d += `${cmd}${xFor(i)},${yFor(v)} `;
+      started = true;
+    });
+    return d.trim();
+  }
+
+  return (
+    <div>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%", height}}>
+        {[0,25,50,75,100].map((g) => (
+          <g key={g}>
+            <line x1={padL} x2={W-padR} y1={yFor(g)} y2={yFor(g)} stroke="#EFEDEF" />
+            <text x={2} y={yFor(g)+3} fontSize="9" fill="#6B6270">{g}</text>
+          </g>
+        ))}
+        <line x1={padL} x2={W-padR} y1={yFor(85)} y2={yFor(85)} stroke="#96408F" strokeDasharray="4 3" />
+        <text x={W-padR-2} y={yFor(85)-4} fontSize="9" fill="#96408F" textAnchor="end">Obj. Hubicus 85%</text>
+        <line x1={padL} x2={W-padR} y1={yFor(90)} y2={yFor(90)} stroke="#5C2258" strokeDasharray="2 2" />
+        <text x={W-padR-2} y={yFor(90)-4} fontSize="9" fill="#5C2258" textAnchor="end">Obj. Process/Transfert 90%</text>
+
+        {series.map((s) => (
+          <path key={s.key} d={pathFor(s.key)} fill="none" stroke={s.color} strokeWidth="2.2" />
+        ))}
+        {series.map((s) => data.map((row, i) => {
+          const v = row[s.key];
+          if (v === null || v === undefined) return null;
+          return <circle key={s.key+i} cx={xFor(i)} cy={yFor(v)} r="2.6" fill={s.color} />;
+        }))}
+        {data.map((row, i) => (
+          <text key={i} x={xFor(i)} y={H-padB+16} fontSize="10" textAnchor="middle" fill="#6B6270">{row.semaine}</text>
+        ))}
+      </svg>
+      <div style={{display:"flex", flexWrap:"wrap", gap:"10px 16px", marginTop:8, justifyContent:"center"}}>
+        {series.map((s) => (
+          <div key={s.key} style={{display:"flex", alignItems:"center", gap:5, fontSize:11, color:"#6B6270"}}>
+            <span style={{width:10, height:10, borderRadius:99, background:s.color, display:"inline-block"}}></span>
+            {s.key}
+          </div>
+        ))}
+      </div>
+      <p style={{fontSize:11, color:"#6B6270", marginTop:8}}>
+        NCC (note /10) affiché ×10 sur la même échelle pour comparaison visuelle — voir le tableau détaillé pour la valeur exacte.
+      </p>
+    </div>
+  );
+}
+
+/* ============================================================
+   SOUS-COMPOSANTS
+   ============================================================ */
+function StatCard({ label, value, sub, tone="neutral" }) {
+  return (
+    <div className={"stat " + tone}>
+      <div className="v">{value}</div>
+      <div className="l">{label}</div>
+      {sub && <div className="s">{sub}</div>}
+    </div>
+  );
+}
+function Badge({ statut }) {
+  return <span className={"badge " + statutClass(statut)}>{statutGlyph(statut)} {statut}</span>;
+}
+function SectionTitle({ icon, children }) {
+  return (
+    <div className="section-title">
+      <div className="ic">{icon}</div>
+      <h2>{children}</h2>
+    </div>
+  );
+}
+
+/* ============================================================
+   VUE : REPORTING
+   ============================================================ */
+function ReportingView({ ecarts, weekly }) {
+  const indStats = computeIndicatorStats(ecarts);
+  const mgrStats = computeManagerStats(ecarts);
+  const total = ecarts.length;
+  const totalDone = ecarts.filter((e) => e.statut === "OK" || e.statut === "KO").length;
+  const tauxGlobal = total ? Math.round((totalDone/total)*1000)/10 : 0;
+  const alertesCount = ecarts.filter((e) => e.alerte).length;
+  const series = INDICATEURS.map((k, i) => ({ key: k, color: SERIES_COLORS[i] }));
+
+  return (
+    <div>
+      <div style={{marginBottom:28}}>
+        <SectionTitle icon="📊">Vue d'ensemble</SectionTitle>
+        <div className="stat-row">
+          <StatCard label="Taux de finalisation global" value={tauxGlobal+"%"} tone={tauxGlobal>=70?"good":tauxGlobal>=40?"accent":"bad"} sub={totalDone+"/"+total+" débriefées"} />
+          <StatCard label="Évaluations en écart (total)" value={total} tone="neutral" />
+          <StatCard label="Restant à débriefer" value={total-totalDone} tone={(total-totalDone)>0?"bad":"good"} />
+          <StatCard label="Points d'alerte récurrence" value={alertesCount} tone={alertesCount>0?"bad":"good"} sub={alertesCount>0?"conseillers à surveiller":"aucun signal"} />
+        </div>
+      </div>
+
+      <div style={{marginBottom:28}}>
+        <SectionTitle icon="✅">Taux de déploiement des débriefings, par indicateur</SectionTitle>
+        <div className="card"><BarChartV data={indStats} labelKey="indicateur" valueKey="taux" /></div>
+      </div>
+
+      <div style={{marginBottom:28}}>
+        <SectionTitle icon="👥">Taux de déploiement des débriefings, par manager</SectionTitle>
+        <div className="card"><BarChartH data={mgrStats} labelKey="manager" valueKey="taux" /></div>
+      </div>
+
+      <div>
+        <SectionTitle icon="📈">Performance des indicateurs, semaine par semaine</SectionTitle>
+        <div className="card"><LineChartMulti data={weekly} series={series} /></div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   VUE : SUIVI DÉBRIEFING
+   ============================================================ */
+function DebriefingView({ ecarts, setEcarts }) {
+  const [search, setSearch] = useState("");
+  const [fInd, setFInd] = useState("Tous");
+  const [fMgr, setFMgr] = useState("Tous");
+  const [fStat, setFStat] = useState("Tous");
+  const [expanded, setExpanded] = useState(null);
+  const [showAdd, setShowAdd] = useState(false);
+
+  const filtered = useMemo(() => ecarts.filter((e) => {
+    if (fInd !== "Tous" && e.indicateur !== fInd) return false;
+    if (fMgr !== "Tous" && e.manager !== fMgr) return false;
+    if (fStat !== "Tous" && e.statut !== fStat) return false;
+    if (search) {
+      const hay = (e.conseiller+" "+e.reference+" "+e.constat+" "+e.ecart).toLowerCase();
+      if (!hay.includes(search.toLowerCase())) return false;
+    }
+    return true;
+  }), [ecarts, search, fInd, fMgr, fStat]);
+
+  function updateRow(id, patch){ setEcarts((prev) => prev.map((e) => e.id===id ? {...e, ...patch} : e)); }
+  function deleteRow(id){ setEcarts((prev) => prev.filter((e) => e.id !== id)); }
+  function addRow(row){ setEcarts((prev) => [...prev, {...row, id: uid()}]); setShowAdd(false); }
+
+  return (
+    <div>
+      <SectionTitle icon="📋">Suivi des débriefings managers</SectionTitle>
+
+      <div className="filters" style={{marginBottom:14}}>
+        <div className="search-box">
+          🔍
+          <input placeholder="Rechercher (conseiller, référence, constat...)" value={search} onChange={(e) => setSearch(e.target.value)} />
+        </div>
+        <select value={fInd} onChange={(e) => setFInd(e.target.value)}>
+          <option>Tous</option>{INDICATEURS.map((i) => <option key={i}>{i}</option>)}
+        </select>
+        <select value={fMgr} onChange={(e) => setFMgr(e.target.value)}>
+          <option>Tous</option>{MANAGERS.map((m) => <option key={m}>{m}</option>)}
+        </select>
+        <select value={fStat} onChange={(e) => setFStat(e.target.value)}>
+          <option>Tous</option>{STATUTS.map((s) => <option key={s}>{s}</option>)}
+        </select>
+        <button className="btn primary" onClick={() => setShowAdd(true)}>+ Ajouter un écart</button>
+      </div>
+
+      <div style={{fontSize:12, color:"var(--textMuted)", marginBottom:8}}>{filtered.length} ligne(s) affichée(s) sur {ecarts.length}</div>
+
+      <div className="card" style={{padding:0, overflow:"hidden"}}>
+        <div style={{overflowX:"auto"}}>
+          <table>
+            <thead>
+              <tr>{["Indicateur","Conseiller","Semaine","Écart constaté","Statut","Manager",""].map((h) => <th key={h}>{h}</th>)}</tr>
+            </thead>
+            <tbody>
+              {filtered.map((e) => (
+                <Fragment key={e.id}>
+                  <tr className={"clickable" + (e.alerte ? " alert-row" : "")} onClick={() => setExpanded(expanded===e.id ? null : e.id)}>
+                    <td style={{color:"var(--purpleDark)", fontWeight:500}}>{e.indicateur}</td>
+                    <td>{e.conseiller}</td>
+                    <td style={{whiteSpace:"nowrap"}}>{e.semaine}</td>
+                    <td><span className="truncate">{e.ecart}</span></td>
+                    <td><Badge statut={e.statut} /></td>
+                    <td style={{whiteSpace:"nowrap"}}>{e.manager}</td>
+                    <td>{expanded===e.id ? "▴" : "▾"}</td>
+                  </tr>
+                  {expanded === e.id && (
+                    <tr>
+                      <td colSpan="7" style={{padding:0}}>
+                        <div className="detail-panel">
+                          <div className="detail-grid">
+                            <div>
+                              <p className="field-label">Référence</p>
+                              <p className="field-value" style={{wordBreak:"break-all", color:"var(--textMuted)"}}>{e.reference || "—"}</p>
+                              <p className="field-label">Constat détaillé</p>
+                              <p className="field-value">{e.constat}</p>
+                              {e.alerte && <div className="status-msg err" style={{display:"inline-block"}}>⚠ {e.alerte}</div>}
+                            </div>
+                            <div>
+                              <p className="field-label">Statut du débriefing</p>
+                              <select style={{width:"100%", marginBottom:10}} value={e.statut} onChange={(ev) => updateRow(e.id, {statut: ev.target.value})}>
+                                {STATUTS.map((s) => <option key={s}>{s}</option>)}
+                              </select>
+                              <p className="field-label">Action réalisée auprès du conseiller</p>
+                              <textarea style={{width:"100%", marginBottom:10}} rows="2" value={e.action} onChange={(ev) => updateRow(e.id, {action: ev.target.value})}></textarea>
+                              <p className="field-label">Date du débriefing</p>
+                              <input type="date" style={{width:"100%", marginBottom:10}} value={e.dateDebrief} onChange={(ev) => updateRow(e.id, {dateDebrief: ev.target.value})} />
+                              <p className="field-label">Manager référent</p>
+                              <select style={{width:"100%", marginBottom:12}} value={e.manager} onChange={(ev) => updateRow(e.id, {manager: ev.target.value})}>
+                                {MANAGERS.map((m) => <option key={m}>{m}</option>)}
+                              </select>
+                              <button className="btn" style={{color:"var(--red)", background:"var(--redSoft)", borderColor:"var(--redSoft)"}} onClick={() => deleteRow(e.id)}>🗑 Supprimer cette ligne</button>
+                            </div>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              ))}
+              {filtered.length === 0 && <tr><td colSpan="7" style={{textAlign:"center", padding:24, color:"var(--textMuted)"}}>Aucune ligne ne correspond à ces filtres.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {showAdd && <AddEcartModal onClose={() => setShowAdd(false)} onAdd={addRow} />}
+    </div>
+  );
+}
+
+function AddEcartModal({ onClose, onAdd }) {
+  const [form, setForm] = useState({
+    indicateur: INDICATEURS[0], conseiller: "", reference: "", semaine: "", date: "",
+    ecart: "", statut: "À traiter", action: "", dateDebrief: "", constat: "",
+    managerDispatch: "", manager: MANAGERS[0], alerte: "",
+  });
+  return (
+    <div className="modal-overlay">
+      <div className="modal">
+        <div className="modal-close-row">
+          <h3>Ajouter une évaluation en écart</h3>
+          <button onClick={onClose} style={{border:"none", background:"none", cursor:"pointer", fontSize:18}}>×</button>
+        </div>
+        <div className="field-stack">
+          <select value={form.indicateur} onChange={(e) => setForm({...form, indicateur:e.target.value})}>
+            {INDICATEURS.map((i) => <option key={i}>{i}</option>)}
+          </select>
+          <input type="text" placeholder="Conseiller" value={form.conseiller} onChange={(e) => setForm({...form, conseiller:e.target.value})} />
+          <input type="text" placeholder="Référence (N° appel / N° demande)" value={form.reference} onChange={(e) => setForm({...form, reference:e.target.value})} />
+          <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:8}}>
+            <input type="text" placeholder="Semaine (ex: S28)" value={form.semaine} onChange={(e) => setForm({...form, semaine:e.target.value})} />
+            <input type="date" value={form.date} onChange={(e) => setForm({...form, date:e.target.value})} />
+          </div>
+          <input type="text" placeholder="Écart constaté" value={form.ecart} onChange={(e) => setForm({...form, ecart:e.target.value})} />
+          <textarea rows="2" placeholder="Constat détaillé" value={form.constat} onChange={(e) => setForm({...form, constat:e.target.value})}></textarea>
+          <select value={form.manager} onChange={(e) => setForm({...form, manager:e.target.value})}>
+            {MANAGERS.map((m) => <option key={m}>{m}</option>)}
+          </select>
+        </div>
+        <div style={{display:"flex", justifyContent:"flex-end", gap:8, marginTop:10}}>
+          <button className="btn" onClick={onClose}>Annuler</button>
+          <button className="btn primary" disabled={!form.conseiller || !form.ecart} onClick={() => onAdd(form)}>Ajouter</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   VUE : IMPORT
+   ============================================================ */
+function ImportView({ ecarts, setEcarts, onImportJSON }) {
+  const [status, setStatus] = useState(null);
+  const [jsonStatus, setJsonStatus] = useState(null);
+  const [preview, setPreview] = useState([]);
+
+  function handleJSONFile(file){
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const data = JSON.parse(evt.target.result);
+        if (!Array.isArray(data.ecarts)) throw new Error("format invalide");
+        onImportJSON(data);
+        setJsonStatus({ok:true, msg: "Chargé : "+data.ecarts.length+" écart(s)"+(data.historique_kpi ? " et "+data.historique_kpi.length+" semaine(s) d'historique" : "")+". Ce contenu remplace les données actuelles."});
+      } catch(err){
+        setJsonStatus({ok:false, msg:"JSON illisible — vérifie qu'il s'agit bien d'un export généré par ce tableau de bord."});
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  function handleFile(file){
+    const isExcel = /\.xlsx?$/i.test(file.name);
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        let rows = [];
+        if (isExcel) {
+          const wb = XLSX.read(evt.target.result, {type:"binary"});
+          rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {defval:""});
+        } else {
+          rows = Papa.parse(evt.target.result, {header:true, skipEmptyLines:true}).data;
+        }
+        setPreview(rows.slice(0,8));
+        const mapped = rows.map((r) => ({
+          id: uid(),
+          indicateur: r["Indicateur"] || r["indicateur"] || "Hubicus Voix",
+          conseiller: r["Conseiller"] || r["conseiller"] || "",
+          reference: r["Référence"] || r["reference"] || r["N° de ticket"] || "",
+          semaine: r["Semaine"] || r["semaine"] || "",
+          date: r["Date"] || r["date"] || "",
+          ecart: r["Écart constaté"] || r["ecart"] || "",
+          statut: r["Débriefing (OK/KO)"] || r["statut"] || "À traiter",
+          action: r["Action réalisée"] || r["action"] || "",
+          dateDebrief: r["Date du débriefing"] || "",
+          constat: r["Constat détaillé"] || r["constat"] || "",
+          managerDispatch: r["Manager (dispatch)"] || "",
+          manager: r["Manager (simplifié)"] || r["manager"] || "Non trouvé",
+          alerte: r["Alerte récurrence"] || "",
+        })).filter((r) => r.conseiller);
+        const existingRefs = new Set(ecarts.map((e) => e.reference));
+        const news = mapped.filter((m) => !existingRefs.has(m.reference));
+        setEcarts((prev) => [...prev, ...news]);
+        setStatus({ok:true, msg: news.length+" nouvelle(s) ligne(s) ajoutée(s) ("+(mapped.length-news.length)+" doublon(s) ignoré(s) par référence)."});
+      } catch(err){
+        setStatus({ok:false, msg:"Fichier illisible — vérifie les colonnes attendues (Indicateur, Conseiller, Référence, Semaine, Date, Écart constaté...)."});
+      }
+    };
+    if (isExcel) reader.readAsBinaryString(file); else reader.readAsText(file);
+  }
+
+  function downloadTemplate(){
+    exportCSV([{
+      Indicateur:"Hubicus Voix", Conseiller:"", "Référence":"", Semaine:"S29", Date:"",
+      "Écart constaté":"", "Débriefing (OK/KO)":"", "Action réalisée":"", "Date du débriefing":"",
+      "Constat détaillé":"", "Manager (dispatch)":"", "Manager (simplifié)":"", "Alerte récurrence":"",
+    }], "modele_import_ecarts.csv");
+  }
+
+  return (
+    <div>
+      <SectionTitle icon="⬆">Importer une extraction</SectionTitle>
+
+      <div className="notice info" style={{marginBottom:16}}>
+        <span className="ic">ℹ</span>
+        <div>Ce tableau de bord importe une extraction <strong>déjà consolidée</strong> (CSV ou Excel avec les colonnes
+        Indicateur / Conseiller / Référence / Semaine / Écart constaté...). Les fichiers sources bruts (grille téléphone
+        Hubicus, contrôle process Auchan/Interne, transferts) ont des structures spécifiques par onglet — fais-les
+        d'abord traiter par Claude en conversation, qui te renverra un CSV au bon format à importer ici.</div>
+      </div>
+
+      <div className="card" style={{marginBottom:16}}>
+        <div style={{fontWeight:600, color:"var(--purpleDark)", marginBottom:8, fontSize:14}}>Recharger un export JSON</div>
+        <p style={{fontSize:13, color:"var(--textMuted)", marginTop:0}}>
+          Reprends ici un fichier <code>.json</code> téléchargé depuis l'onglet Extractions — par exemple après
+          l'avoir fait enrichir par Claude, ou pour le recharger dans un autre navigateur. Le contenu remplace
+          entièrement les écarts et l'historique KPI actuellement affichés.
+        </p>
+        <label className="drop">
+          ⬆ Choisir un fichier .json
+          <input type="file" accept=".json,application/json" style={{display:"none"}} onChange={(e) => e.target.files[0] && handleJSONFile(e.target.files[0])} />
+        </label>
+        {jsonStatus && <div className={"status-msg " + (jsonStatus.ok ? "ok" : "err")}>{jsonStatus.msg}</div>}
+      </div>
+
+      <div className="divider-row"><div className="line"></div><span>ou ajouter des lignes depuis un CSV / Excel</span><div className="line"></div></div>
+
+      <div style={{display:"flex", flexWrap:"wrap", gap:12, marginBottom:12}}>
+        <label className="drop" style={{flex:1, minWidth:220}}>
+          ⬆ Choisir un fichier (.csv, .xlsx)
+          <input type="file" accept=".csv,.xlsx,.xls" style={{display:"none"}} onChange={(e) => e.target.files[0] && handleFile(e.target.files[0])} />
+        </label>
+        <button className="btn" onClick={downloadTemplate}>⬇ Télécharger le modèle CSV</button>
+      </div>
+
+      {status && <div className={"status-msg " + (status.ok ? "ok" : "err")}>{status.msg}</div>}
+
+      {preview.length > 0 && (
+        <div className="card" style={{overflowX:"auto", marginTop:14}}>
+          <div style={{fontSize:12, fontWeight:600, color:"var(--purpleDark)", marginBottom:8}}>Aperçu (8 premières lignes lues)</div>
+          <table style={{fontSize:12}}>
+            <thead><tr>{Object.keys(preview[0]).slice(0,6).map((k) => <th key={k} style={{color:"var(--textMuted)", background:"none"}}>{k}</th>)}</tr></thead>
+            <tbody>
+              {preview.map((r,i) => (
+                <tr key={i}>{Object.keys(preview[0]).slice(0,6).map((k) => <td key={k} style={{maxWidth:160, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{String(r[k])}</td>)}</tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   VUE : EXTRACTIONS / EXPORT
+   ============================================================ */
+function ExportView({ ecarts, weekly }) {
+  const [fMgr, setFMgr] = useState("Tous");
+  const [fInd, setFInd] = useState("Tous");
+  const [fStat, setFStat] = useState("Tous");
+
+  const filtered = useMemo(() => ecarts.filter((e) => {
+    if (fMgr !== "Tous" && e.manager !== fMgr) return false;
+    if (fInd !== "Tous" && e.indicateur !== fInd) return false;
+    if (fStat !== "Tous" && e.statut !== fStat) return false;
+    return true;
+  }), [ecarts, fMgr, fInd, fStat]);
+
+  function exportSelection(){
+    exportCSV(filtered.map((e) => ({
+      Indicateur:e.indicateur, Conseiller:e.conseiller, Manager:e.manager, Semaine:e.semaine,
+      Statut:e.statut, "Action réalisée":e.action, "Date du débriefing":e.dateDebrief, Constat:e.constat,
+    })), "actions_deployees.csv");
+  }
+
+  return (
+    <div>
+      <SectionTitle icon="🗄">Extractions — actions déployées</SectionTitle>
+
+      <div className="filters" style={{marginBottom:14}}>
+        <span>▤</span>
+        <select value={fMgr} onChange={(e) => setFMgr(e.target.value)}><option>Tous</option>{MANAGERS.map((m) => <option key={m}>{m}</option>)}</select>
+        <select value={fInd} onChange={(e) => setFInd(e.target.value)}><option>Tous</option>{INDICATEURS.map((i) => <option key={i}>{i}</option>)}</select>
+        <select value={fStat} onChange={(e) => setFStat(e.target.value)}><option>Tous</option>{STATUTS.map((s) => <option key={s}>{s}</option>)}</select>
+        <div style={{marginLeft:"auto", fontSize:12, color:"var(--textMuted)"}}>{filtered.length} action(s) correspondante(s)</div>
+      </div>
+
+      <div className="card" style={{padding:0, overflow:"hidden", marginBottom:16}}>
+        <table>
+          <thead><tr>{["Conseiller","Manager","Indicateur","Statut","Action réalisée"].map((h) => <th key={h}>{h}</th>)}</tr></thead>
+          <tbody>
+            {filtered.slice(0,50).map((e) => (
+              <tr key={e.id}>
+                <td>{e.conseiller}</td><td>{e.manager}</td>
+                <td style={{fontSize:12}}>{e.indicateur}</td>
+                <td><Badge statut={e.statut} /></td>
+                <td style={{fontSize:12}}><span className="truncate" style={{maxWidth:320}}>{e.action || "—"}</span></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {filtered.length > 50 && <div style={{textAlign:"center", padding:8, fontSize:12, color:"var(--textMuted)"}}>Affichage limité à 50 lignes — exporter pour voir l'ensemble.</div>}
+      </div>
+
+      <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))", gap:12, marginBottom:16}}>
+        <button className="btn primary" onClick={exportSelection}>⬇ Exporter la sélection (CSV)</button>
+        <button className="btn outline" onClick={() => exportExcel(ecarts, weekly)}>📊 Générer le fichier Excel complet</button>
+        <button className="btn" onClick={() => exportForClaude(ecarts, weekly)}>⧉ Export pour régénérer le PowerPoint</button>
+      </div>
+
+      <div className="notice warn">
+        <span className="ic">⚠</span>
+        <div>Le PowerPoint ne peut pas être généré directement depuis cette page (aucune librairie de génération .pptx
+        disponible côté navigateur). Le bouton « Export pour régénérer le PowerPoint » télécharge un fichier JSON
+        structuré — dépose-le dans une conversation Claude pour obtenir automatiquement les slides mises à jour.</div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   APP PRINCIPALE
+   ============================================================ */
+function App(){
+  const [tab, setTab] = useState("reporting");
+  const [ecarts, setEcarts] = useState(SEED_ECARTS);
+  const [weekly, setWeekly] = useState(SEED_WEEKLY);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [connStatus, setConnStatus] = useState("connecting"); // connecting | ok | unconfigured | error
+  const [connError, setConnError] = useState("");
+  const firstLoad = React.useRef(true);
+
+  // Chargement initial + abonnement temps réel
+  useEffect(() => {
+    let unsubEcarts = () => {};
+    let unsubWeekly = () => {};
+
+    (async () => {
+      const resE = await fsLoad(STORAGE_KEY_ECARTS, SEED_ECARTS);
+      const resW = await fsLoad(STORAGE_KEY_WEEKLY, SEED_WEEKLY);
+      setEcarts(resE.value);
+      setWeekly(resW.value);
+      setConnStatus(resE.status);
+      setConnError(resE.error || "");
+      setLoaded(true);
+      firstLoad.current = false;
+
+      if (resE.status === "ok") {
+        unsubEcarts = fsSubscribe(STORAGE_KEY_ECARTS, (val) => setEcarts(val));
+        unsubWeekly = fsSubscribe(STORAGE_KEY_WEEKLY, (val) => setWeekly(val));
+      }
+    })();
+
+    return () => { unsubEcarts(); unsubWeekly(); };
+  }, []);
+
+  // Sauvegarde (debounce) à chaque changement, une fois le chargement initial fait
+  useEffect(() => {
+    if (!loaded) return;
+    setSaving(true);
+    const t = setTimeout(async () => {
+      if (connStatus === "ok") {
+        await fsSave(STORAGE_KEY_ECARTS, ecarts);
+        await fsSave(STORAGE_KEY_WEEKLY, weekly);
+      }
+      setSaving(false);
+    }, 500);
+    return () => clearTimeout(t);
+  }, [ecarts, weekly, loaded, connStatus]);
+
+  function importFromJSON(data){
+    if (Array.isArray(data.ecarts)) setEcarts(data.ecarts.map((e) => ({...e, id: e.id ?? uid()})));
+    if (Array.isArray(data.historique_kpi)) setWeekly(data.historique_kpi);
+  }
+
+  const tabs = [
+    { id:"reporting", label:"Reporting", icon:"📊" },
+    { id:"debriefing", label:"Suivi débriefing", icon:"📋" },
+    { id:"import", label:"Importer", icon:"⬆" },
+    { id:"export", label:"Extractions", icon:"🗄" },
+  ];
+
+  const statusLabel = {
+    connecting: "Connexion...",
+    ok: saving ? "Enregistrement..." : "Connecté — partagé en ligne (Firebase)",
+    unconfigured: "Mode local — Firebase non configuré (voir README)",
+    error: "Erreur de connexion Firebase — données non partagées",
+  }[connStatus];
+
+  return (
+    <div>
+      <div className="header">
+        <div className="wrap header-inner">
+          <div>
+            <h1>Suivi Qualité — TERSEA Madagascar</h1>
+            <p>Débriefings managers · Reporting · Compte Auchan · Site Mada</p>
+          </div>
+          <div className="status">💾 {statusLabel}</div>
+        </div>
+      </div>
+
+      {connStatus === "unconfigured" && (
+        <div className="wrap" style={{paddingTop:14}}>
+          <div className="notice warn">
+            <span className="ic">⚠</span>
+            <div>
+              Firebase n'est pas encore configuré : les données sont conservées uniquement dans <strong>ce
+              navigateur</strong>, pas partagées avec les autres. Suis les étapes du fichier <code>README.md</code>
+              (créer un projet Firebase gratuit, activer Firestore, coller la config en haut du fichier HTML) pour
+              activer le partage en ligne entre utilisateurs.
+            </div>
+          </div>
+        </div>
+      )}
+      {connStatus === "error" && (
+        <div className="wrap" style={{paddingTop:14}}>
+          <div className="notice warn">
+            <span className="ic">⚠</span>
+            <div>Impossible de se connecter à Firebase ({connError || "erreur inconnue"}). Vérifie la configuration
+            et les règles Firestore (fichier <code>firestore.rules</code>). En attendant, les modifications restent
+            en mémoire locale et seront perdues à la fermeture de la page.</div>
+          </div>
+        </div>
+      )}
+
+      <div className="tabs">
+        <div className="wrap tabs-inner">
+          {tabs.map((t) => (
+            <button key={t.id} className={"tab-btn" + (tab===t.id ? " active" : "")} onClick={() => setTab(t.id)}>
+              {t.icon} {t.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="wrap content">
+        {tab === "reporting" && <ReportingView ecarts={ecarts} weekly={weekly} />}
+        {tab === "debriefing" && <DebriefingView ecarts={ecarts} setEcarts={setEcarts} />}
+        {tab === "import" && <ImportView ecarts={ecarts} setEcarts={setEcarts} onImportJSON={importFromJSON} />}
+        {tab === "export" && <ExportView ecarts={ecarts} weekly={weekly} />}
+      </div>
+
+      <div className="footer">
+        TERSEA · Site Mada · Compte Auchan — {connStatus === "ok" ? "données partagées en ligne via Firebase" : "voir README.md pour activer le partage en ligne"}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

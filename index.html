@@ -38,7 +38,6 @@
 
 };
 
-
   const isConfigured = firebaseConfig.apiKey !== "COLLE_TA_CLE_API_ICI";
   window.__firebaseConfigured = isConfigured;
 
@@ -161,10 +160,12 @@ const INDICATEURS = [
   "Conformité Process (Interne)", "Conformité Transfert", "NCC / Satisfaction Client",
 ];
 const SERIES_COLORS = ["#96408F", "#B06BAA", "#C98A1E", "#7A8FBD", "#5FA8A0", "#3CA06E"];
-const MANAGERS = ["Christopha", "Haingo Fi", "Ibra", "Rojo", "À confirmer", "Non trouvé"];
+const MANAGERS = ["Christopha", "Haingo Fi", "Ibra", "Rojo", "Hery", "Fina", "À confirmer", "Non trouvé"];
 const STATUTS = ["À traiter", "OK", "KO"];
 const STORAGE_KEY_ECARTS = "tersea_dashboard_ecarts";
 const STORAGE_KEY_WEEKLY = "tersea_dashboard_weekly";
+const STORAGE_KEY_ROSTER = "tersea_dashboard_roster";
+const NOUVEAU_ANCIEN_SEUIL_JOURS = 90; // en dessous de ce seuil (date d'entrée en prod), un conseiller est considéré "Nouveau"
 
 /* ============================================================
    DONNÉES INITIALES (S25 à S28, Site Mada)
@@ -277,6 +278,36 @@ function computeDaily(ecarts){
   return Object.keys(map).sort().map((date) => ({ date, count: map[date] }));
 }
 
+function normalizeName(str){
+  if (!str) return "";
+  return String(str).trim().split(/\s+/)[0].toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+function findRosterEntry(conseiller, roster){
+  const key = normalizeName(conseiller);
+  if (!key || !roster || !roster.length) return null;
+  return roster.find((r) => normalizeName(r.conseiller) === key) || null;
+}
+
+function getConseillerStatus(conseiller, roster){
+  const entry = findRosterEntry(conseiller, roster);
+  if (!entry) return "Non renseigné";
+  if (entry.statut === "Nouveau" || entry.statut === "Ancien") return entry.statut;
+  if (entry.dateEntreeProd) {
+    const d = new Date(entry.dateEntreeProd);
+    if (!isNaN(d)) {
+      const days = (Date.now() - d.getTime()) / 86400000;
+      return days <= NOUVEAU_ANCIEN_SEUIL_JOURS ? "Nouveau" : "Ancien";
+    }
+  }
+  return "Non renseigné";
+}
+
+function getConseillerManagerFromRoster(conseiller, roster){
+  const entry = findRosterEntry(conseiller, roster);
+  return entry ? entry.manager : null;
+}
+
 /* ============================================================
    UTILITAIRES
    ============================================================ */
@@ -384,11 +415,11 @@ function exportExcel(ecarts, weekly){
   XLSX.utils.book_append_sheet(wb, ws3, "Historique KPI");
   XLSX.writeFile(wb, "Suivi_Debriefing_Manager.xlsx");
 }
-function exportForClaude(ecarts, weekly){
+function exportForClaude(ecarts, weekly, roster){
   const payload = {
     genere_le: new Date().toISOString(),
     note: "Coller ce JSON dans une conversation Claude avec la consigne 'mets à jour le PowerPoint et l'Excel qualité avec ces données' pour régénérer les supports.",
-    ecarts, historique_kpi: weekly,
+    ecarts, historique_kpi: weekly, repartition_equipes: roster || [],
   };
   downloadBlob(JSON.stringify(payload, null, 2), "export_pour_claude.json", "application/json");
 }
@@ -600,9 +631,12 @@ function SectionTitle({ icon, children }) {
 /* ============================================================
    VUE : REPORTING
    ============================================================ */
-function ReportingView({ ecarts, weekly }) {
+function ReportingView({ ecarts, weekly, roster }) {
   const [granularity, setGranularity] = useState("tous");
   const [periodValue, setPeriodValue] = useState("Toutes");
+  const [managerFilter, setManagerFilter] = useState("Tous");
+  const [ancienneteFilter, setAncienneteFilter] = useState("Tous");
+  const [visibleIndicators, setVisibleIndicators] = useState(() => new Set(INDICATEURS));
 
   const weekOptions = useMemo(() => {
     const set = new Set(ecarts.map((e) => extractWeekCode(e.semaine)).filter(Boolean));
@@ -616,16 +650,23 @@ function ReportingView({ ecarts, weekly }) {
     const set = new Set(ecarts.map((e) => e.date).filter(Boolean));
     return [...set].sort();
   }, [ecarts]);
+  const managerOptions = useMemo(() => {
+    const set = new Set(ecarts.map((e) => e.manager).filter(Boolean));
+    return MANAGERS.filter((m) => set.has(m));
+  }, [ecarts]);
 
   const filteredForOverview = useMemo(() => {
-    if (granularity === "tous" || periodValue === "Toutes") return ecarts;
     return ecarts.filter((e) => {
-      if (granularity === "semaine") return extractWeekCode(e.semaine) === periodValue;
-      if (granularity === "mois") return weekToMonth(e.semaine) === periodValue;
-      if (granularity === "jour") return e.date === periodValue;
+      if (granularity !== "tous" && periodValue !== "Toutes") {
+        if (granularity === "semaine" && extractWeekCode(e.semaine) !== periodValue) return false;
+        if (granularity === "mois" && weekToMonth(e.semaine) !== periodValue) return false;
+        if (granularity === "jour" && e.date !== periodValue) return false;
+      }
+      if (managerFilter !== "Tous" && e.manager !== managerFilter) return false;
+      if (ancienneteFilter !== "Tous" && getConseillerStatus(e.conseiller, roster) !== ancienneteFilter) return false;
       return true;
     });
-  }, [ecarts, granularity, periodValue]);
+  }, [ecarts, granularity, periodValue, managerFilter, ancienneteFilter, roster]);
 
   const indStats = computeIndicatorStats(ecarts);
   const mgrStats = computeManagerStats(ecarts);
@@ -633,7 +674,20 @@ function ReportingView({ ecarts, weekly }) {
   const totalDone = filteredForOverview.filter((e) => e.statut === "OK" || e.statut === "KO").length;
   const tauxGlobal = total ? Math.round((totalDone/total)*1000)/10 : 0;
   const alertesCount = filteredForOverview.filter((e) => e.alerte).length;
-  const series = INDICATEURS.map((k, i) => ({ key: k, color: SERIES_COLORS[i] }));
+  const series = INDICATEURS
+    .map((k, i) => ({ key: k, color: SERIES_COLORS[i] }))
+    .filter((s) => visibleIndicators.has(s.key));
+
+  function toggleIndicator(key){
+    setVisibleIndicators((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) { if (next.size > 1) next.delete(key); } else next.add(key);
+      return next;
+    });
+  }
+
+  const hasRoster = roster && roster.length > 0;
+  const anyFilterActive = (granularity !== "tous" && periodValue !== "Toutes") || managerFilter !== "Tous" || ancienneteFilter !== "Tous";
 
   return (
     <div>
@@ -644,15 +698,34 @@ function ReportingView({ ecarts, weekly }) {
           value={periodValue} setValue={setPeriodValue}
           weekOptions={weekOptions} monthOptions={monthOptions} dayOptions={dayOptions}
         />
+        <div className="filters" style={{marginBottom:16, marginTop:-8}}>
+          <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600}}>Manager :</span>
+          <select value={managerFilter} onChange={(e) => setManagerFilter(e.target.value)}>
+            <option>Tous</option>
+            {managerOptions.map((m) => <option key={m}>{m}</option>)}
+          </select>
+          <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600, marginLeft:8}}>Ancienneté :</span>
+          <select value={ancienneteFilter} onChange={(e) => setAncienneteFilter(e.target.value)}>
+            <option>Tous</option>
+            <option>Nouveau</option>
+            <option>Ancien</option>
+            <option>Non renseigné</option>
+          </select>
+          {!hasRoster && (
+            <span style={{fontSize:11, color:"var(--textMuted)"}}>
+              (importe la répartition des équipes dans l'onglet Importer pour distinguer nouveaux/anciens)
+            </span>
+          )}
+        </div>
         <div className="stat-row">
           <StatCard label="Taux de finalisation global" value={tauxGlobal+"%"} tone={tauxGlobal>=70?"good":tauxGlobal>=40?"accent":"bad"} sub={totalDone+"/"+total+" débriefées"} />
           <StatCard label="Évaluations en écart (total)" value={total} tone="neutral" />
           <StatCard label="Restant à débriefer" value={total-totalDone} tone={(total-totalDone)>0?"bad":"good"} />
           <StatCard label="Points d'alerte récurrence" value={alertesCount} tone={alertesCount>0?"bad":"good"} sub={alertesCount>0?"conseillers à surveiller":"aucun signal"} />
         </div>
-        {granularity !== "tous" && periodValue !== "Toutes" && (
+        {anyFilterActive && (
           <p style={{fontSize:11, color:"var(--textMuted)", marginTop:8}}>
-            Filtré sur : {granularity} {periodValue}. Les graphiques ci-dessous restent calculés sur l'ensemble des données.
+            Filtres actifs sur ce bloc uniquement — les graphiques ci-dessous restent calculés sur l'ensemble des données.
           </p>
         )}
       </div>
@@ -669,6 +742,19 @@ function ReportingView({ ecarts, weekly }) {
 
       <div>
         <SectionTitle icon="📈">Performance des indicateurs, semaine par semaine</SectionTitle>
+        <div className="filters" style={{marginBottom:14}}>
+          <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600}}>Indicateurs affichés :</span>
+          {INDICATEURS.map((k, i) => (
+            <button
+              key={k}
+              className="btn"
+              style={visibleIndicators.has(k) ? { background:SERIES_COLORS[i], color:"#fff", borderColor:SERIES_COLORS[i] } : { color:"var(--textMuted)" }}
+              onClick={() => toggleIndicator(k)}
+            >
+              {k}
+            </button>
+          ))}
+        </div>
         <div className="card"><LineChartMulti data={weekly} series={series} xKey="semaine" /></div>
       </div>
     </div>
@@ -948,10 +1034,52 @@ function AddEcartModal({ onClose, onAdd }) {
 /* ============================================================
    VUE : IMPORT
    ============================================================ */
-function ImportView({ ecarts, setEcarts, onImportJSON }) {
+function ImportView({ ecarts, setEcarts, onImportJSON, roster, setRoster }) {
   const [status, setStatus] = useState(null);
   const [jsonStatus, setJsonStatus] = useState(null);
+  const [rosterStatus, setRosterStatus] = useState(null);
   const [preview, setPreview] = useState([]);
+
+  function handleRosterFile(file){
+    const isExcel = /\.xlsx?$/i.test(file.name);
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        let rows = [];
+        if (isExcel) {
+          const wb = XLSX.read(evt.target.result, {type:"binary"});
+          rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {defval:""});
+        } else {
+          rows = Papa.parse(evt.target.result, {header:true, skipEmptyLines:true}).data;
+        }
+        const mapped = rows.map((r) => {
+          const conseillerRaw = r["Conseiller"] || r["conseiller"] || r["Nom complet"] || r["Diamant"] || r["Nom"] || "";
+          const managerRaw = r["Manager"] || r["manager"] || "";
+          const statutRaw = r["Statut"] || r["statut"] || r["Nouveau/Ancien"] || r["Nouveau / Ancien"] || "";
+          const dateEntree = r["Date d'entrée en prod"] || r["Date d'entrée"] || r["dateEntreeProd"] || "";
+          return {
+            conseiller: String(conseillerRaw).trim(),
+            manager: String(managerRaw).trim(),
+            site: String(r["Site"] || r["site"] || r["SITE"] || "").trim(),
+            statut: (statutRaw === "Nouveau" || statutRaw === "Ancien") ? statutRaw : "",
+            dateEntreeProd: dateEntree ? String(dateEntree) : "",
+          };
+        }).filter((r) => r.conseiller);
+        setRoster(mapped);
+        setRosterStatus({ok:true, msg: mapped.length+" conseiller(s) chargé(s) dans la répartition des équipes. Ce contenu remplace la répartition précédente."});
+      } catch(err){
+        setRosterStatus({ok:false, msg:"Fichier illisible — colonnes attendues : Conseiller, Manager, Site (optionnel), Statut ou Date d'entrée en prod (optionnel)."});
+      }
+    };
+    if (isExcel) reader.readAsBinaryString(file); else reader.readAsText(file);
+  }
+
+  function downloadRosterTemplate(){
+    exportCSV([
+      { Conseiller:"Rosa", Manager:"Ibra", Site:"MADA", Statut:"Ancien", "Date d'entrée en prod":"" },
+      { Conseiller:"Jacky", Manager:"Hery", Site:"MADA", Statut:"Nouveau", "Date d'entrée en prod":"2026-06-01" },
+    ], "modele_repartition_equipes.csv");
+  }
 
   function handleJSONFile(file){
     const reader = new FileReader();
@@ -1054,6 +1182,33 @@ function ImportView({ ecarts, setEcarts, onImportJSON }) {
 
       {status && <div className={"status-msg " + (status.ok ? "ok" : "err")}>{status.msg}</div>}
 
+      <div className="divider-row"><div className="line"></div><span>répartition des équipes</span><div className="line"></div></div>
+
+      <div className="card" style={{marginBottom:16}}>
+        <div style={{fontWeight:600, color:"var(--purpleDark)", marginBottom:8, fontSize:14}}>Importer la répartition des équipes</div>
+        <p style={{fontSize:13, color:"var(--textMuted)", marginTop:0}}>
+          Fichier conseiller → manager (ex. onglet « Config » du fichier Transfert, ou le dispatch mensuel).
+          Colonnes reconnues : <code>Conseiller</code> (ou Nom complet / Diamant), <code>Manager</code>, <code>Site</code> (optionnel),
+          et soit <code>Statut</code> (Nouveau/Ancien), soit <code>Date d'entrée en prod</code> (un conseiller entré il y a moins de
+          {" "}{NOUVEAU_ANCIEN_SEUIL_JOURS} jours est classé « Nouveau » automatiquement). Ceci alimente le filtre
+          Nouveau/Ancien et le rapprochement manager dans l'onglet Reporting.
+        </p>
+        <div style={{display:"flex", flexWrap:"wrap", gap:12}}>
+          <label className="drop" style={{flex:1, minWidth:220}}>
+            ⬆ Choisir un fichier équipes (.csv, .xlsx)
+            <input type="file" accept=".csv,.xlsx,.xls" style={{display:"none"}} onChange={(e) => e.target.files[0] && handleRosterFile(e.target.files[0])} />
+          </label>
+          <button className="btn" onClick={downloadRosterTemplate}>⬇ Télécharger le modèle CSV</button>
+        </div>
+        {rosterStatus && <div className={"status-msg " + (rosterStatus.ok ? "ok" : "err")}>{rosterStatus.msg}</div>}
+        {roster && roster.length > 0 && (
+          <p style={{fontSize:12, color:"var(--textMuted)", marginTop:10}}>
+            Répartition actuelle : {roster.length} conseiller(s) — {roster.filter((r) => r.statut === "Nouveau" || (r.dateEntreeProd && (Date.now() - new Date(r.dateEntreeProd).getTime())/86400000 <= NOUVEAU_ANCIEN_SEUIL_JOURS)).length} « Nouveau » détecté(s).
+          </p>
+        )}
+      </div>
+
+
       {preview.length > 0 && (
         <div className="card" style={{overflowX:"auto", marginTop:14}}>
           <div style={{fontSize:12, fontWeight:600, color:"var(--purpleDark)", marginBottom:8}}>Aperçu (8 premières lignes lues)</div>
@@ -1074,7 +1229,7 @@ function ImportView({ ecarts, setEcarts, onImportJSON }) {
 /* ============================================================
    VUE : EXTRACTIONS / EXPORT
    ============================================================ */
-function ExportView({ ecarts, weekly }) {
+function ExportView({ ecarts, weekly, roster }) {
   const [fMgr, setFMgr] = useState("Tous");
   const [fInd, setFInd] = useState("Tous");
   const [fStat, setFStat] = useState("Tous");
@@ -1125,7 +1280,7 @@ function ExportView({ ecarts, weekly }) {
       <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))", gap:12, marginBottom:16}}>
         <button className="btn primary" onClick={exportSelection}>⬇ Exporter la sélection (CSV)</button>
         <button className="btn outline" onClick={() => exportExcel(ecarts, weekly)}>📊 Générer le fichier Excel complet</button>
-        <button className="btn" onClick={() => exportForClaude(ecarts, weekly)}>⧉ Export pour régénérer le PowerPoint</button>
+        <button className="btn" onClick={() => exportForClaude(ecarts, weekly, roster)}>⧉ Export pour régénérer le PowerPoint</button>
       </div>
 
       <div className="notice warn">
@@ -1145,6 +1300,7 @@ function App(){
   const [tab, setTab] = useState("reporting");
   const [ecarts, setEcarts] = useState(SEED_ECARTS);
   const [weekly, setWeekly] = useState(SEED_WEEKLY);
+  const [roster, setRoster] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [connStatus, setConnStatus] = useState("connecting"); // connecting | ok | unconfigured | error
@@ -1155,12 +1311,15 @@ function App(){
   useEffect(() => {
     let unsubEcarts = () => {};
     let unsubWeekly = () => {};
+    let unsubRoster = () => {};
 
     (async () => {
       const resE = await fsLoad(STORAGE_KEY_ECARTS, SEED_ECARTS);
       const resW = await fsLoad(STORAGE_KEY_WEEKLY, SEED_WEEKLY);
+      const resR = await fsLoad(STORAGE_KEY_ROSTER, []);
       setEcarts(resE.value);
       setWeekly(resW.value);
+      setRoster(resR.value);
       setConnStatus(resE.status);
       setConnError(resE.error || "");
       setLoaded(true);
@@ -1169,10 +1328,11 @@ function App(){
       if (resE.status === "ok") {
         unsubEcarts = fsSubscribe(STORAGE_KEY_ECARTS, (val) => setEcarts(val));
         unsubWeekly = fsSubscribe(STORAGE_KEY_WEEKLY, (val) => setWeekly(val));
+        unsubRoster = fsSubscribe(STORAGE_KEY_ROSTER, (val) => setRoster(val));
       }
     })();
 
-    return () => { unsubEcarts(); unsubWeekly(); };
+    return () => { unsubEcarts(); unsubWeekly(); unsubRoster(); };
   }, []);
 
   // Sauvegarde (debounce) à chaque changement, une fois le chargement initial fait
@@ -1183,11 +1343,12 @@ function App(){
       if (connStatus === "ok") {
         await fsSave(STORAGE_KEY_ECARTS, ecarts);
         await fsSave(STORAGE_KEY_WEEKLY, weekly);
+        await fsSave(STORAGE_KEY_ROSTER, roster);
       }
       setSaving(false);
     }, 500);
     return () => clearTimeout(t);
-  }, [ecarts, weekly, loaded, connStatus]);
+  }, [ecarts, weekly, roster, loaded, connStatus]);
 
   async function saveNow(ecartsToSave, weeklyToSave){
     if (connStatus !== "ok") return { ok: false, reason: connStatus };
@@ -1201,6 +1362,7 @@ function App(){
   function importFromJSON(data){
     if (Array.isArray(data.ecarts)) setEcarts(data.ecarts.map((e) => ({...e, id: e.id ?? uid()})));
     if (Array.isArray(data.historique_kpi)) setWeekly(data.historique_kpi);
+    if (Array.isArray(data.repartition_equipes)) setRoster(data.repartition_equipes);
   }
 
   const tabs = [
@@ -1265,11 +1427,11 @@ function App(){
       </div>
 
       <div className="wrap content">
-        {tab === "reporting" && <ReportingView ecarts={ecarts} weekly={weekly} />}
+        {tab === "reporting" && <ReportingView ecarts={ecarts} weekly={weekly} roster={roster} />}
         {tab === "performance" && <PerformanceView ecarts={ecarts} weekly={weekly} />}
         {tab === "debriefing" && <DebriefingView ecarts={ecarts} setEcarts={setEcarts} weekly={weekly} onSaveNow={saveNow} />}
-        {tab === "import" && <ImportView ecarts={ecarts} setEcarts={setEcarts} onImportJSON={importFromJSON} />}
-        {tab === "export" && <ExportView ecarts={ecarts} weekly={weekly} />}
+        {tab === "import" && <ImportView ecarts={ecarts} setEcarts={setEcarts} onImportJSON={importFromJSON} roster={roster} setRoster={setRoster} />}
+        {tab === "export" && <ExportView ecarts={ecarts} weekly={weekly} roster={roster} />}
       </div>
 
       <div className="footer">

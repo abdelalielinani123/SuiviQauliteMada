@@ -38,6 +38,7 @@
 
 };
 
+
   const isConfigured = firebaseConfig.apiKey !== "COLLE_TA_CLE_API_ICI";
   window.__firebaseConfigured = isConfigured;
 
@@ -239,6 +240,90 @@ const SEED_WEEKLY = [
   { semaine: "S27", "Hubicus Voix": 86, "Hubicus Mail": 70, "Conformité Process (Auchan)": 43, "Conformité Process (Interne)": null, "Conformité Transfert": null, "NCC / Satisfaction Client": 82 },
   { semaine: "S28", "Hubicus Voix": 75, "Hubicus Mail": 97, "Conformité Process (Auchan)": 33, "Conformité Process (Interne)": null, "Conformité Transfert": null, "NCC / Satisfaction Client": 75 },
 ];
+
+const SEED_ROSTER = [
+  { conseiller: "Felicia TER_PST32_716", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "Rosa TER_PST32_669", manager: "Ibra", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "Carine TER_PST32_660", manager: "Christopha", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "Rojo TER_PST32_641", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "Finaritra TER_PST32_663", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "Aina TER_PST32_658", manager: "Christopha", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "Huguette TER_PST32_654", manager: "Christopha", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "Samoina TER_PST32_652", manager: "Rojo", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "Tsiory TER_PST32_644", manager: "Rojo", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "AMINATA TER_PST32_704", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "HERILALA TER_PST32_705", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "ANNA TER_PST32_706", manager: "Rojo", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "FEHIZORO TER_PST32_707", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "KENNY TER_PST32_708", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "ANJANIAINA TER_PST32_709", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "MIALITIANA TER_PST32_710", manager: "Christopha", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "HARIVOLA TER_PST32_711", manager: "Ibra", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "ROMEO TER_PST32_712", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "TSITONIAINA TER_PST32_713", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "ANGELA TER_PST32_714", manager: "Ibra", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "JOELLA TER_PST32_715", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "SOLANGE TER_PST32_716", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "FITIAVANA TER_PST32_717", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "ESTEL TER_PST32_718", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "FANOMEZANA TER_PST32_719", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "NOMENA TER_PST32_720", manager: "Christopha", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "TSIARO TER_PST32_721", manager: "Ibra", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "SUZANNE TER_PST32_722", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "ANNICK TER_PST32_723", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "AINA TER_PST32_724", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "LOLA TER_PST32_725", manager: "Rojo", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "SABRINETTE TER_PST32_726", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "VANESSA TER_PST32_727", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "SAMIRAH TER_PST32_728", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "ERIC TER_PST32_729", manager: "Ibra", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "SAROBIDY TER_PST32_730", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "NASANDRATRA TER_PST32_731", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "ALEX TER_PST32_732", manager: "Ibra", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "NATHANAËL TER_PST32_733", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "TOLOTRA TER_PST32_734", manager: "Ibra", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "LUCKA TER_PST32_735", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "ASHMYHR TER_PST32_736", manager: "Ibra", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "DIAMONDRA TER_PST32_737", manager: "Rojo", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "HANITRA TER_PST32_738", manager: "Ibra", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "VOLANIAINA TER_PST32_739", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "BRIAN TER_PST32_740", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "RITAH TER_PST32_741", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "SOMBINIAINA TER_PST32_742", manager: "Ibra", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "ANGELO TER_PST32_743", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "FANIRIANTSOA TER_PST32_744", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "VIRGINIA TER_PST32_745", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "AVOTRA TER_PST32_746", manager: "Ibra", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "FANANTENANA TER_PST32_747", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "JUDIANNAH TER_PST32_748", manager: "Christopha", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "CHRISTIAN TER_PST32_749", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "HERY TER_PST32_750", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "IBRAMDJEE TER_PST32_751", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "MAMPIONONA TER_PST32_752", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "Thomas TER_PST32_667", manager: "Ibra", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "Mira TER_PST32_656", manager: "Ibra", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "Mialy TER_PST32_710", manager: "Christopha", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "Elodie TER_PST32_642", manager: "Rojo", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "Jacky TER_PST32_647", manager: "Rojo", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "Joeca TER_PST32_666", manager: "Rojo", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "Nomena TER_PST32_657", manager: "Ibra", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "Sarobidy TER_PST32_678", manager: "Rojo", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "Seth TER_PST32_711", manager: "Ibra", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "Tony TER_PST32_734", manager: "Ibra", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
+  { conseiller: "DERA TER_PST32_789", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "DIAMONDRA TER_PST32_737", manager: "Rojo", site: "MADA", statut: "Nouveau", dateEntreeProd: "" },
+  { conseiller: "SYLVIA TER_PST32_791", manager: "Rojo", site: "MADA", statut: "Nouveau", dateEntreeProd: "" },
+  { conseiller: "MICKAEL TER_PST32_792", manager: "Ibra", site: "MADA", statut: "Nouveau", dateEntreeProd: "" },
+  { conseiller: "VOLANA TER_PST32_793", manager: "Rojo", site: "MADA", statut: "Nouveau", dateEntreeProd: "" },
+  { conseiller: "MICHAEL TER_PST32_795", manager: "Rojo", site: "MADA", statut: "Nouveau", dateEntreeProd: "" },
+  { conseiller: "MURIELLE TER_PST32_796", manager: "Rojo", site: "MADA", statut: "Nouveau", dateEntreeProd: "" },
+  { conseiller: "MANITRA TER_PST32_797", manager: "Rojo", site: "MADA", statut: "Nouveau", dateEntreeProd: "" },
+  { conseiller: "MIHANTA TER_PST32_798", manager: "Rojo", site: "MADA", statut: "Nouveau", dateEntreeProd: "" },
+  { conseiller: "TIAVINA TER_PST32_799", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
+  { conseiller: "HARIZO TER_PST32_800", manager: "Ibra", site: "MADA", statut: "Nouveau", dateEntreeProd: "" },
+  { conseiller: "ANDRY TER_PST32_802", manager: "Ibra", site: "MADA", statut: "Nouveau", dateEntreeProd: "" },
+  { conseiller: "SONIA TER_PST32_803", manager: "Rojo", site: "MADA", statut: "Nouveau", dateEntreeProd: "" },
+];
 /* NCC est stocké ×10 dans l'historique (ex: 8.2/10 -> 82) pour partager l'échelle 0-100 avec les autres indicateurs. */
 
 /* Correspondance semaine -> mois, déduite des dates réelles (S19 = semaine du 04/05/2026) */
@@ -292,7 +377,7 @@ function findRosterEntry(conseiller, roster){
 function getConseillerStatus(conseiller, roster){
   const entry = findRosterEntry(conseiller, roster);
   if (!entry) return "Non renseigné";
-  if (entry.statut === "Nouveau" || entry.statut === "Ancien") return entry.statut;
+  if (entry.statut === "Nouveau" || entry.statut === "Ancien" || entry.statut === "Départ") return entry.statut;
   if (entry.dateEntreeProd) {
     const d = new Date(entry.dateEntreeProd);
     if (!isNaN(d)) {
@@ -709,6 +794,7 @@ function ReportingView({ ecarts, weekly, roster }) {
             <option>Tous</option>
             <option>Nouveau</option>
             <option>Ancien</option>
+            <option>Départ</option>
             <option>Non renseigné</option>
           </select>
           {!hasRoster && (
@@ -1300,7 +1386,7 @@ function App(){
   const [tab, setTab] = useState("reporting");
   const [ecarts, setEcarts] = useState(SEED_ECARTS);
   const [weekly, setWeekly] = useState(SEED_WEEKLY);
-  const [roster, setRoster] = useState([]);
+  const [roster, setRoster] = useState(SEED_ROSTER);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [connStatus, setConnStatus] = useState("connecting"); // connecting | ok | unconfigured | error
@@ -1316,7 +1402,7 @@ function App(){
     (async () => {
       const resE = await fsLoad(STORAGE_KEY_ECARTS, SEED_ECARTS);
       const resW = await fsLoad(STORAGE_KEY_WEEKLY, SEED_WEEKLY);
-      const resR = await fsLoad(STORAGE_KEY_ROSTER, []);
+      const resR = await fsLoad(STORAGE_KEY_ROSTER, SEED_ROSTER);
       setEcarts(resE.value);
       setWeekly(resW.value);
       setRoster(resR.value);

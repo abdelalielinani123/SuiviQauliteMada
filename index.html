@@ -852,9 +852,24 @@ function ReportingView({ ecarts, weekly, roster }) {
    ============================================================ */
 function PerformanceView({ ecarts, weekly }) {
   const [granularity, setGranularity] = useState("semaine");
-  const series = INDICATEURS.map((k, i) => ({ key: k, color: SERIES_COLORS[i] }));
+  const [visibleIndicators, setVisibleIndicators] = useState(() => new Set(INDICATEURS));
+  const series = INDICATEURS
+    .map((k, i) => ({ key: k, color: SERIES_COLORS[i] }))
+    .filter((s) => visibleIndicators.has(s.key));
   const monthly = useMemo(() => computeMonthly(weekly), [weekly]);
-  const daily = useMemo(() => computeDaily(ecarts), [ecarts]);
+  const filteredEcartsForDaily = useMemo(
+    () => ecarts.filter((e) => visibleIndicators.has(e.indicateur)),
+    [ecarts, visibleIndicators]
+  );
+  const daily = useMemo(() => computeDaily(filteredEcartsForDaily), [filteredEcartsForDaily]);
+
+  function toggleIndicator(key){
+    setVisibleIndicators((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) { if (next.size > 1) next.delete(key); } else next.add(key);
+      return next;
+    });
+  }
 
   const granOptions = [
     { id: "jour", label: "Jour" },
@@ -866,7 +881,7 @@ function PerformanceView({ ecarts, weekly }) {
     <div>
       <SectionTitle icon="📈">Suivi de la performance</SectionTitle>
 
-      <div className="filters" style={{marginBottom:16}}>
+      <div className="filters" style={{marginBottom:12}}>
         <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600}}>Vue :</span>
         {granOptions.map((g) => (
           <button
@@ -876,6 +891,20 @@ function PerformanceView({ ecarts, weekly }) {
             onClick={() => setGranularity(g.id)}
           >
             {g.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="filters" style={{marginBottom:16}}>
+        <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600}}>Indicateurs affichés :</span>
+        {INDICATEURS.map((k, i) => (
+          <button
+            key={k}
+            className="btn"
+            style={visibleIndicators.has(k) ? { background:SERIES_COLORS[i], color:"#fff", borderColor:SERIES_COLORS[i] } : { color:"var(--textMuted)" }}
+            onClick={() => toggleIndicator(k)}
+          >
+            {k}
           </button>
         ))}
       </div>
@@ -912,8 +941,8 @@ function PerformanceView({ ecarts, weekly }) {
           <div className="notice info" style={{marginTop:14}}>
             <span className="ic">ℹ</span>
             <div>Vue par jour = volume d'écarts constatés (comptage), et non un taux de conformité : les fichiers
-            source ne fournissent un taux calculé qu'à la semaine. Seules les lignes avec une date renseignée
-            apparaissent ici ({ecarts.filter((e) => e.date).length}/{ecarts.length} lignes datées).</div>
+            source ne fournissent un taux calculé qu'à la semaine. Seules les lignes avec une date renseignée et un
+            indicateur sélectionné ci-dessus apparaissent ici ({filteredEcartsForDaily.filter((e) => e.date).length}/{filteredEcartsForDaily.length} lignes datées).</div>
           </div>
         </div>
       )}
@@ -991,19 +1020,39 @@ function DebriefingView({ ecarts, setEcarts, weekly, onSaveNow }) {
   const [fInd, setFInd] = useState("Tous");
   const [fMgr, setFMgr] = useState("Tous");
   const [fStat, setFStat] = useState("Tous");
+  const [granularity, setGranularity] = useState("tous");
+  const [periodValue, setPeriodValue] = useState("Toutes");
   const [expanded, setExpanded] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
+
+  const weekOptions = useMemo(() => {
+    const set = new Set(ecarts.map((e) => extractWeekCode(e.semaine)).filter(Boolean));
+    return [...set].sort();
+  }, [ecarts]);
+  const monthOptions = useMemo(() => {
+    const set = new Set(ecarts.map((e) => weekToMonth(e.semaine)).filter(Boolean));
+    return MONTH_ORDER.filter((m) => set.has(m));
+  }, [ecarts]);
+  const dayOptions = useMemo(() => {
+    const set = new Set(ecarts.map((e) => e.date).filter(Boolean));
+    return [...set].sort();
+  }, [ecarts]);
 
   const filtered = useMemo(() => ecarts.filter((e) => {
     if (fInd !== "Tous" && e.indicateur !== fInd) return false;
     if (fMgr !== "Tous" && e.manager !== fMgr) return false;
     if (fStat !== "Tous" && e.statut !== fStat) return false;
+    if (granularity !== "tous" && periodValue !== "Toutes") {
+      if (granularity === "semaine" && extractWeekCode(e.semaine) !== periodValue) return false;
+      if (granularity === "mois" && weekToMonth(e.semaine) !== periodValue) return false;
+      if (granularity === "jour" && e.date !== periodValue) return false;
+    }
     if (search) {
       const hay = (e.conseiller+" "+e.reference+" "+e.constat+" "+e.ecart).toLowerCase();
       if (!hay.includes(search.toLowerCase())) return false;
     }
     return true;
-  }), [ecarts, search, fInd, fMgr, fStat]);
+  }), [ecarts, search, fInd, fMgr, fStat, granularity, periodValue]);
 
   async function saveRow(id, patch){
     const updated = ecarts.map((x) => x.id === id ? {...x, ...patch} : x);
@@ -1021,6 +1070,12 @@ function DebriefingView({ ecarts, setEcarts, weekly, onSaveNow }) {
   return (
     <div>
       <SectionTitle icon="📋">Suivi des débriefings managers</SectionTitle>
+
+      <PeriodFilter
+        granularity={granularity} setGranularity={setGranularity}
+        value={periodValue} setValue={setPeriodValue}
+        weekOptions={weekOptions} monthOptions={monthOptions} dayOptions={dayOptions}
+      />
 
       <div className="filters" style={{marginBottom:14}}>
         <div className="search-box">

@@ -23,13 +23,21 @@
   import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 
   const firebaseConfig = {
-    apiKey: "AIzaSyCwQkHcJLFn8z0cw1gBYUmZpW7VRs5dGAc",
-    authDomain: "suiviqualitemada.firebaseapp.com",
-    projectId: "suiviqualitemada",
-    storageBucket: "suiviqualitemada.firebasestorage.app",
-    messagingSenderId: "51800223156",
-    appId: "1:51800223156:web:49a541a49bc7976d8e16e1",
-  };
+
+  apiKey: "AIzaSyCwQkHcJLFn8z0cw1gBYUmZpW7VRs5dGAc",
+
+  authDomain: "suiviqualitemada.firebaseapp.com",
+
+  projectId: "suiviqualitemada",
+
+  storageBucket: "suiviqualitemada.firebasestorage.app",
+
+  messagingSenderId: "51800223156",
+
+  appId: "1:51800223156:web:49a541a49bc7976d8e16e1"
+
+};
+
 
   const isConfigured = firebaseConfig.apiKey !== "COLLE_TA_CLE_API_ICI";
   window.__firebaseConfigured = isConfigured;
@@ -1384,6 +1392,7 @@ function App(){
   const [connStatus, setConnStatus] = useState("connecting"); // connecting | ok | unconfigured | error
   const [connError, setConnError] = useState("");
   const firstLoad = React.useRef(true);
+  const remoteUpdateRef = React.useRef({ ecarts: false, weekly: false, roster: false });
 
   // Chargement initial + abonnement temps réel
   useEffect(() => {
@@ -1395,6 +1404,9 @@ function App(){
       const resE = await fsLoad(STORAGE_KEY_ECARTS, SEED_ECARTS);
       const resW = await fsLoad(STORAGE_KEY_WEEKLY, SEED_WEEKLY);
       const resR = await fsLoad(STORAGE_KEY_ROSTER, SEED_ROSTER);
+      // Le chargement initial ne doit jamais déclencher une ré-écriture immédiate :
+      // on vient de lire cette donnée, pas besoin de la réenregistrer telle quelle.
+      remoteUpdateRef.current = { ecarts: true, weekly: true, roster: true };
       setEcarts(resE.value);
       setWeekly(resW.value);
       // Un tableau vide enregistré avant l'ajout du roster ne doit pas écraser SEED_ROSTER
@@ -1405,18 +1417,24 @@ function App(){
       firstLoad.current = false;
 
       if (resE.status === "ok") {
-        unsubEcarts = fsSubscribe(STORAGE_KEY_ECARTS, (val) => setEcarts(val));
-        unsubWeekly = fsSubscribe(STORAGE_KEY_WEEKLY, (val) => setWeekly(val));
-        unsubRoster = fsSubscribe(STORAGE_KEY_ROSTER, (val) => setRoster(val && val.length > 0 ? val : SEED_ROSTER));
+        unsubEcarts = fsSubscribe(STORAGE_KEY_ECARTS, (val) => { remoteUpdateRef.current.ecarts = true; setEcarts(val); });
+        unsubWeekly = fsSubscribe(STORAGE_KEY_WEEKLY, (val) => { remoteUpdateRef.current.weekly = true; setWeekly(val); });
+        unsubRoster = fsSubscribe(STORAGE_KEY_ROSTER, (val) => { remoteUpdateRef.current.roster = true; setRoster(val && val.length > 0 ? val : SEED_ROSTER); });
       }
     })();
 
     return () => { unsubEcarts(); unsubWeekly(); unsubRoster(); };
   }, []);
 
-  // Sauvegarde (debounce) à chaque changement, une fois le chargement initial fait
+  // Sauvegarde (debounce) à chaque changement, une fois le chargement initial fait —
+  // mais PAS si ce changement provient uniquement d'une mise à jour reçue de Firestore
+  // (sinon un onglet resté ouvert peut "renvoyer" une donnée périmée en boucle).
   useEffect(() => {
     if (!loaded) return;
+    if (remoteUpdateRef.current.ecarts || remoteUpdateRef.current.weekly || remoteUpdateRef.current.roster) {
+      remoteUpdateRef.current = { ecarts: false, weekly: false, roster: false };
+      return;
+    }
     setSaving(true);
     const t = setTimeout(async () => {
       if (connStatus === "ok") {

@@ -39,6 +39,7 @@
 };
 
 
+
   const isConfigured = firebaseConfig.apiKey !== "COLLE_TA_CLE_API_ICI";
   window.__firebaseConfigured = isConfigured;
 
@@ -130,7 +131,7 @@
   .status-msg.err{background:var(--redSoft); color:var(--red);}
   .detail-panel{background:var(--purpleSoft); padding:16px 18px;}
   .detail-grid{display:grid; grid-template-columns:1fr 1fr; gap:20px;}
-  @media (max-width:760px){.detail-grid{grid-template-columns:1fr;}}
+  @media (max-width:760px){.detail-grid{grid-template-columns:1fr;} .grid-2col{grid-template-columns:1fr !important;}}
   .field-label{font-size:12px; font-weight:600; color:var(--purpleDark); margin:0 0 4px;}
   .field-value{font-size:13px; margin-bottom:10px;}
   .modal-overlay{position:fixed; inset:0; background:rgba(0,0,0,.4); display:flex; align-items:center;
@@ -161,7 +162,18 @@ const INDICATEURS = [
   "Conformité Process (Interne)", "Conformité Transfert", "NCC / Satisfaction Client",
 ];
 const SERIES_COLORS = ["#96408F", "#B06BAA", "#C98A1E", "#7A8FBD", "#5FA8A0", "#3CA06E"];
-const MANAGERS = ["Christopha", "Haingo Fi", "Ibra", "Rojo", "Hery", "Fina", "À confirmer", "Non trouvé"];
+const OBJECTIFS = {
+  "Hubicus Voix": 85,
+  "Hubicus Mail": 85,
+  "Conformité Process (Auchan)": 90,
+  "Conformité Process (Interne)": 90,
+  "Conformité Transfert": 90,
+  "NCC / Satisfaction Client": 8.1,
+};
+
+// Managers réellement identifiés dans la répartition d'équipe (onglet "Lot unique") — les autres noms
+// rencontrés dans d'anciens fichiers de dispatch (Haingo Fi, Hery, Fina) ont été retirés de partout.
+const MANAGERS = ["Christopha", "Ibra", "Rojo", "À confirmer", "Non trouvé"];
 const STATUTS = ["À traiter", "OK", "KO"];
 const STORAGE_KEY_ECARTS = "tersea_dashboard_ecarts";
 const STORAGE_KEY_WEEKLY = "tersea_dashboard_weekly";
@@ -180,13 +192,13 @@ const SEED_ECARTS = [
   { id: 6, indicateur: "Hubicus Voix", conseiller: "Eric", reference: "019f375a-9dcc-4a6a-ab10-97915f8003b4", semaine: "S28", date: "2026-07-06", ecart: "Note = 77.1% (objectif 85%)", statut: "À traiter", action: "Debrief à réaliser // Refresh sur la grille à faire", dateDebrief: "2026-07-09", constat: "Prise en charge de la demande non réalisée ; reformulation non réalisée ; absence de personnalisation.", managerDispatch: "Ibra", manager: "Ibra", alerte: "" },
   { id: 7, indicateur: "Hubicus Voix", conseiller: "Alex", reference: "019f365e-2d35-4cc1-aeeb-8af5a63c65af", semaine: "S28", date: "2026-07-08", ecart: "Note = 83.3% (objectif 85%)", statut: "À traiter", action: "Debrief à réaliser // Refresh sur la grille à faire", dateDebrief: "2026-07-09", constat: "Reformulation « perroquet » ; absence de personnalisation ; reprise de garde non personnalisée.", managerDispatch: "Ibra", manager: "Ibra", alerte: "" },
   { id: 8, indicateur: "Hubicus Voix", conseiller: "Jacky", reference: "019f40ed-4058-4e60-859e-17e0a2301a30", semaine: "S28", date: "2026-07-08", ecart: "Note = 0.0% (objectif 85%)", statut: "À traiter", action: "", dateDebrief: "", constat: "SI : présentation trop tardive ; reformulation non réalisée ; manque d'écoute active ; absence de fiabilisation.", managerDispatch: "Non trouvé dans le dispatch Juillet", manager: "Non trouvé", alerte: "" },
-  { id: 9, indicateur: "Hubicus Voix", conseiller: "Avotra", reference: "019f41bf-b3d6-4ab1-9f3e-55fe8133d8f3", semaine: "S28", date: "2026-07-08", ecart: "Note = 0.0% (objectif 85%)", statut: "À traiter", action: "", dateDebrief: "", constat: "SI : réponse du conseiller jugée impactante pour l'image de la marque.", managerDispatch: "Rojo ou Ibra (2 candidats homonymes)", manager: "À confirmer", alerte: "" },
+  { id: 9, indicateur: "Hubicus Voix", conseiller: "Avotra", reference: "019f41bf-b3d6-4ab1-9f3e-55fe8133d8f3", semaine: "S28", date: "2026-07-08", ecart: "Note = 0.0% (objectif 85%)", statut: "À traiter", action: "", dateDebrief: "", constat: "SI : réponse du conseiller jugée impactante pour l'image de la marque.", managerDispatch: "Ibra (répartition d'équipe)", manager: "Ibra", alerte: "" },
   { id: 10, indicateur: "Hubicus Voix", conseiller: "Tsiaro", reference: "019f4634-dd90-4b7f-914b-71d485b4a970", semaine: "S28", date: "2026-07-09", ecart: "Note = 0.0% (objectif 85%)", statut: "À traiter", action: "", dateDebrief: "", constat: "SI : client raccroché pendant le temps d'attente (délai dépassé).", managerDispatch: "Ibra", manager: "Ibra", alerte: "" },
   { id: 11, indicateur: "Hubicus Mail", conseiller: "Alex", reference: "18824428", semaine: "S28", date: "2026-07-08", ecart: "Note = 79.0% (objectif 85%)", statut: "À traiter", action: "Debrief à réaliser // Grille mail à revoir", dateDebrief: "2026-07-09", constat: "Objet de l'email trop générique ; message d'allié client peu personnalisé ; mise en page insuffisante.", managerDispatch: "Ibra", manager: "Ibra", alerte: "" },
   { id: 12, indicateur: "Conformité Process (Auchan)", conseiller: "Kenny", reference: "18769226 · réf. appel : 019f132d-d228-49da-ad83-5686cf7b4d3a", semaine: "S27", date: "2026-06-29", ecart: "Statut global = SI — Hyper : livraison", statut: "KO", action: "Sortie de l'agent", dateDebrief: "", constat: "KO historisation. Promets un geste co : rien dans AROM + pas de tâche.", managerDispatch: "Non trouvé dans le dispatch Juillet", manager: "Non trouvé", alerte: "" },
-  { id: 13, indicateur: "Conformité Process (Auchan)", conseiller: "Nomena", reference: "18775568 · réf. appel : 019f15e5-70d1-43f9-879c-7fba0e1dd7bd", semaine: "S27", date: "2026-06-30", ecart: "Statut global = KO — Drive : chartre fraîcheur", statut: "À traiter", action: "", dateDebrief: "", constat: "Le conseiller n'a pas proposé un geste commercial suffisant.", managerDispatch: "Christopha ou Haingo Fi (2 candidats)", manager: "À confirmer", alerte: "" },
+  { id: 13, indicateur: "Conformité Process (Auchan)", conseiller: "Nomena", reference: "18775568 · réf. appel : 019f15e5-70d1-43f9-879c-7fba0e1dd7bd", semaine: "S27", date: "2026-06-30", ecart: "Statut global = KO — Drive : chartre fraîcheur", statut: "À traiter", action: "", dateDebrief: "", constat: "Le conseiller n'a pas proposé un geste commercial suffisant.", managerDispatch: "Christopha (répartition d'équipe)", manager: "Christopha", alerte: "" },
   { id: 14, indicateur: "Conformité Process (Auchan)", conseiller: "Romeo", reference: "18694806 (contact mail, pas de réf. appel)", semaine: "S27", date: "2026-06-29", ecart: "Statut global = KO — AFR : double facturation", statut: "KO", action: "Sortie de l'agent", dateDebrief: "", constat: "Le montant du remboursement n'a pas été indiqué au client.", managerDispatch: "Non trouvé dans le dispatch Juillet", manager: "Non trouvé", alerte: "" },
-  { id: 15, indicateur: "Conformité Process (Auchan)", conseiller: "Anna", reference: "réf. appel : 019f320f-c9ad-4a0d-8310-e512c7c07c1e (cas BCN)", semaine: "S27", date: "2026-07-05", ecart: "Statut global = SI — BCN : appel raccourci", statut: "À traiter", action: "", dateDebrief: "", constat: "L'appel dure 19 secondes ; le conseiller aurait dû prendre la parole.", managerDispatch: "Haingo Fi", manager: "Haingo Fi", alerte: "" },
+  { id: 15, indicateur: "Conformité Process (Auchan)", conseiller: "Anna", reference: "réf. appel : 019f320f-c9ad-4a0d-8310-e512c7c07c1e (cas BCN)", semaine: "S27", date: "2026-07-05", ecart: "Statut global = SI — BCN : appel raccourci", statut: "À traiter", action: "", dateDebrief: "", constat: "L'appel dure 19 secondes ; le conseiller aurait dû prendre la parole.", managerDispatch: "Rojo (répartition d'équipe)", manager: "Rojo", alerte: "" },
   { id: 16, indicateur: "Conformité Process (Auchan)", conseiller: "Rosa", reference: "18814318 (contact mail)", semaine: "S28 (partiel)", date: "2026-07-08", ecart: "Statut global = SI — Drive : relance remboursement", statut: "À traiter", action: "Débrief à réaliser", dateDebrief: "2026-07-09", constat: "C'était à la conseillère de prendre en charge ; elle transfère au magasin.", managerDispatch: "Ibra", manager: "Ibra", alerte: "⚠ 2e SI de la semaine (même conseillère)" },
   { id: 17, indicateur: "Conformité Process (Auchan)", conseiller: "Rosa", reference: "18824630 · réf. appel : 019f3c32-2d1f-45e3-b3f6-18de0c6fc017", semaine: "S28 (partiel)", date: "2026-07-07", ecart: "Statut global = SI — AFR : suivi commande", statut: "À traiter", action: "", dateDebrief: "", constat: "La conseillère aurait dû rappeler le client dans le cadre du suivi.", managerDispatch: "Ibra", manager: "Ibra", alerte: "⚠ 2e SI de la semaine (même conseillère)" },
   { id: 18, indicateur: "Conformité Process (Interne)", conseiller: "Fitiavana", reference: "18146309 (réf. appel non renseignée)", semaine: "S26", date: "2026-06-26", ecart: "Statut global = SI — Signalement d'article manquant", statut: "KO", action: "Sortie de l'agent", dateDebrief: "", constat: "Le délai de remboursement communiqué au client est erroné.", managerDispatch: "Non trouvé dans le dispatch Juillet", manager: "Non trouvé", alerte: "" },
@@ -196,19 +208,19 @@ const SEED_ECARTS = [
   { id: 22, indicateur: "Conformité Transfert", conseiller: "ERIC", reference: "18665398 (réf. appel non trouvée)", semaine: "S25", date: "2026-06-15", ecart: "Non conforme — Objet perdu", statut: "À traiter", action: "Rappel sur les règles de transfert", dateDebrief: "", constat: "La demande n'a pas été identifiée ; contact via une seconde file requis.", managerDispatch: "Ibra", manager: "Ibra", alerte: "" },
   { id: 23, indicateur: "Conformité Transfert", conseiller: "ERIC", reference: "18662411 (réf. appel non trouvée)", semaine: "S25", date: "2026-06-15", ecart: "Non conforme — Disponibilité de produit", statut: "À traiter", action: "Mauvais geste métier", dateDebrief: "", constat: "Aucun contact vers le magasin avant la mise en file d'attente.", managerDispatch: "Ibra", manager: "Ibra", alerte: "" },
   { id: 24, indicateur: "Conformité Transfert", conseiller: "ERIC", reference: "18664322 (réf. appel non trouvée)", semaine: "S25", date: "2026-06-15", ecart: "Non conforme — Réclamation sur un produit", statut: "À traiter", action: "", dateDebrief: "", constat: "Demande mise dans la mauvaise file ; réclamation concernant un autre magasin.", managerDispatch: "Ibra", manager: "Ibra", alerte: "" },
-  { id: 25, indicateur: "Conformité Transfert", conseiller: "HANITRA", reference: "18662270 · réf. appel : 019ebd7e-d285-4a45-9269-6fa2e83d375d", semaine: "S25", date: "2026-06-15", ecart: "Non conforme — Suivi de livraison", statut: "À traiter", action: "", dateDebrief: "", constat: "Aucun contact du magasin initié avant la transmission.", managerDispatch: "Haingo Fi", manager: "Haingo Fi", alerte: "" },
-  { id: 26, indicateur: "Conformité Transfert", conseiller: "HANITRA", reference: "18657748 · réf. appel : 019ebb6f-8d5b-4873-9d28-54af8bf0072c", semaine: "S25", date: "2026-06-15", ecart: "Non conforme — Disponibilité d'article", statut: "À traiter", action: "", dateDebrief: "", constat: "Règle de transfert non respectée : contact accueil uniquement.", managerDispatch: "Haingo Fi", manager: "Haingo Fi", alerte: "" },
-  { id: 27, indicateur: "Conformité Transfert", conseiller: "HANITRA", reference: "18657662 (réf. appel non trouvée)", semaine: "S25", date: "2026-06-15", ecart: "Non conforme — Mise en relation RH", statut: "À traiter", action: "", dateDebrief: "", constat: "Erreur process : SVI collaborateur à communiquer.", managerDispatch: "Haingo Fi", manager: "Haingo Fi", alerte: "" },
+  { id: 25, indicateur: "Conformité Transfert", conseiller: "HANITRA", reference: "18662270 · réf. appel : 019ebd7e-d285-4a45-9269-6fa2e83d375d", semaine: "S25", date: "2026-06-15", ecart: "Non conforme — Suivi de livraison", statut: "À traiter", action: "", dateDebrief: "", constat: "Aucun contact du magasin initié avant la transmission.", managerDispatch: "Ibra (répartition d'équipe)", manager: "Ibra", alerte: "" },
+  { id: 26, indicateur: "Conformité Transfert", conseiller: "HANITRA", reference: "18657748 · réf. appel : 019ebb6f-8d5b-4873-9d28-54af8bf0072c", semaine: "S25", date: "2026-06-15", ecart: "Non conforme — Disponibilité d'article", statut: "À traiter", action: "", dateDebrief: "", constat: "Règle de transfert non respectée : contact accueil uniquement.", managerDispatch: "Ibra (répartition d'équipe)", manager: "Ibra", alerte: "" },
+  { id: 27, indicateur: "Conformité Transfert", conseiller: "HANITRA", reference: "18657662 (réf. appel non trouvée)", semaine: "S25", date: "2026-06-15", ecart: "Non conforme — Mise en relation RH", statut: "À traiter", action: "", dateDebrief: "", constat: "Erreur process : SVI collaborateur à communiquer.", managerDispatch: "Ibra (répartition d'équipe)", manager: "Ibra", alerte: "" },
   { id: 28, indicateur: "Conformité Transfert", conseiller: "Huguette", reference: "18611290 (contact mail)", semaine: "S25", date: "2026-06-15", ecart: "Non conforme — Qualité alimentaire", statut: "KO", action: "Sortie de l'agent", dateDebrief: "", constat: "Fiche conso à remplir ; informations d'achat disponibles à notre niveau.", managerDispatch: "Non trouvé dans le dispatch Juillet", manager: "Non trouvé", alerte: "" },
   { id: 29, indicateur: "Conformité Transfert", conseiller: "Huguette", reference: "18656397 · réf. appel : 019ebb0e-aa13-490a-a326-a09f90e983eb", semaine: "S25", date: "2026-06-15", ecart: "Non conforme — Mise en relation directeur", statut: "À traiter", action: "", dateDebrief: "", constat: "Aucun contact du magasin effectué.", managerDispatch: "Christopha", manager: "Christopha", alerte: "" },
   { id: 30, indicateur: "Conformité Transfert", conseiller: "Huguette", reference: "18666921 (réf. appel non trouvée)", semaine: "S25", date: "2026-06-15", ecart: "Non conforme — Décalage récupération commande", statut: "À traiter", action: "", dateDebrief: "", constat: "Aucune tentative de contact du Drive effectuée.", managerDispatch: "Christopha", manager: "Christopha", alerte: "" },
-  { id: 31, indicateur: "Conformité Transfert", conseiller: "Nomena", reference: "18672582 (réf. appel non trouvée)", semaine: "S25", date: "2026-06-16", ecart: "Non conforme — Disponibilité de produit", statut: "À traiter", action: "", dateDebrief: "", constat: "Contact de l'accueil en premier lieu au lieu du bon rayon.", managerDispatch: "Christopha ou Haingo Fi (2 candidats)", manager: "À confirmer", alerte: "" },
-  { id: 32, indicateur: "Conformité Transfert", conseiller: "Nomena", reference: "18671335 (contact mail)", semaine: "S25", date: "2026-06-16", ecart: "Non conforme — Litige à la réception", statut: "À traiter", action: "", dateDebrief: "", constat: "La demande est traitable au niveau de l'agent directement.", managerDispatch: "Christopha ou Haingo Fi (2 candidats)", manager: "À confirmer", alerte: "" },
-  { id: 33, indicateur: "Conformité Transfert", conseiller: "Nomena", reference: "18671183 (contact mail)", semaine: "S25", date: "2026-06-16", ecart: "Non conforme — Candidature", statut: "À traiter", action: "", dateDebrief: "", constat: "La procédure aurait dû être communiquée directement au client.", managerDispatch: "Christopha ou Haingo Fi (2 candidats)", manager: "À confirmer", alerte: "" },
-  { id: 34, indicateur: "Conformité Transfert", conseiller: "Nomena", reference: "18670940 (contact mail)", semaine: "S25", date: "2026-06-16", ecart: "Non conforme — Articles manquants", statut: "À traiter", action: "", dateDebrief: "", constat: "Demande traitable au niveau de l'agent en questionnant le client.", managerDispatch: "Christopha ou Haingo Fi (2 candidats)", manager: "À confirmer", alerte: "" },
-  { id: 35, indicateur: "Conformité Transfert", conseiller: "Nomena", reference: "18670783 (contact mail)", semaine: "S25", date: "2026-06-16", ecart: "Non conforme — Promotion non appliquée", statut: "À traiter", action: "", dateDebrief: "", constat: "Produits éligibles aux 10% cagnottés visibles à notre niveau.", managerDispatch: "Christopha ou Haingo Fi (2 candidats)", manager: "À confirmer", alerte: "" },
-  { id: 36, indicateur: "Conformité Transfert", conseiller: "Nomena", reference: "18670293 · réf. appel : 019eca6d-54c2-4621-bb77-898c7d777eb3", semaine: "S25", date: "2026-06-16", ecart: "Non conforme — Décalage récupération commande", statut: "À traiter", action: "", dateDebrief: "", constat: "Mauvaise file contactée : accueil du magasin au lieu du Drive.", managerDispatch: "Christopha ou Haingo Fi (2 candidats)", manager: "À confirmer", alerte: "" },
-  { id: 37, indicateur: "Conformité Transfert", conseiller: "Nomena", reference: "18668606 (contact mail)", semaine: "S25", date: "2026-06-16", ecart: "Non conforme — Produit expiré", statut: "À traiter", action: "", dateDebrief: "", constat: "Traitement faisable au niveau de l'agent directement.", managerDispatch: "Christopha ou Haingo Fi (2 candidats)", manager: "À confirmer", alerte: "" },
+  { id: 31, indicateur: "Conformité Transfert", conseiller: "Nomena", reference: "18672582 (réf. appel non trouvée)", semaine: "S25", date: "2026-06-16", ecart: "Non conforme — Disponibilité de produit", statut: "À traiter", action: "", dateDebrief: "", constat: "Contact de l'accueil en premier lieu au lieu du bon rayon.", managerDispatch: "Christopha (répartition d'équipe)", manager: "Christopha", alerte: "" },
+  { id: 32, indicateur: "Conformité Transfert", conseiller: "Nomena", reference: "18671335 (contact mail)", semaine: "S25", date: "2026-06-16", ecart: "Non conforme — Litige à la réception", statut: "À traiter", action: "", dateDebrief: "", constat: "La demande est traitable au niveau de l'agent directement.", managerDispatch: "Christopha (répartition d'équipe)", manager: "Christopha", alerte: "" },
+  { id: 33, indicateur: "Conformité Transfert", conseiller: "Nomena", reference: "18671183 (contact mail)", semaine: "S25", date: "2026-06-16", ecart: "Non conforme — Candidature", statut: "À traiter", action: "", dateDebrief: "", constat: "La procédure aurait dû être communiquée directement au client.", managerDispatch: "Christopha (répartition d'équipe)", manager: "Christopha", alerte: "" },
+  { id: 34, indicateur: "Conformité Transfert", conseiller: "Nomena", reference: "18670940 (contact mail)", semaine: "S25", date: "2026-06-16", ecart: "Non conforme — Articles manquants", statut: "À traiter", action: "", dateDebrief: "", constat: "Demande traitable au niveau de l'agent en questionnant le client.", managerDispatch: "Christopha (répartition d'équipe)", manager: "Christopha", alerte: "" },
+  { id: 35, indicateur: "Conformité Transfert", conseiller: "Nomena", reference: "18670783 (contact mail)", semaine: "S25", date: "2026-06-16", ecart: "Non conforme — Promotion non appliquée", statut: "À traiter", action: "", dateDebrief: "", constat: "Produits éligibles aux 10% cagnottés visibles à notre niveau.", managerDispatch: "Christopha (répartition d'équipe)", manager: "Christopha", alerte: "" },
+  { id: 36, indicateur: "Conformité Transfert", conseiller: "Nomena", reference: "18670293 · réf. appel : 019eca6d-54c2-4621-bb77-898c7d777eb3", semaine: "S25", date: "2026-06-16", ecart: "Non conforme — Décalage récupération commande", statut: "À traiter", action: "", dateDebrief: "", constat: "Mauvaise file contactée : accueil du magasin au lieu du Drive.", managerDispatch: "Christopha (répartition d'équipe)", manager: "Christopha", alerte: "" },
+  { id: 37, indicateur: "Conformité Transfert", conseiller: "Nomena", reference: "18668606 (contact mail)", semaine: "S25", date: "2026-06-16", ecart: "Non conforme — Produit expiré", statut: "À traiter", action: "", dateDebrief: "", constat: "Traitement faisable au niveau de l'agent directement.", managerDispatch: "Christopha (répartition d'équipe)", manager: "Christopha", alerte: "" },
   { id: 38, indicateur: "Conformité Transfert", conseiller: "Tony", reference: "18672885 (contact mail)", semaine: "S25", date: "2026-06-16", ecart: "Non conforme — Articles manquants", statut: "À traiter", action: "", dateDebrief: "", constat: "Rien ne justifie le transfert vers le super.", managerDispatch: "Non trouvé dans le dispatch Juillet", manager: "Non trouvé", alerte: "" },
   { id: 39, indicateur: "Conformité Transfert", conseiller: "Tony", reference: "18669236 · réf. appel : 019eca51-7e59-4130-943c-ab9e04d78ae3", semaine: "S25", date: "2026-06-16", ecart: "Non conforme — Promotion non appliquée", statut: "À traiter", action: "", dateDebrief: "", constat: "Le gestionnaire aurait dû être sollicité pour vérifier l'effectivité.", managerDispatch: "Non trouvé dans le dispatch Juillet", manager: "Non trouvé", alerte: "" },
   { id: 40, indicateur: "Conformité Transfert", conseiller: "Tony", reference: "18669204 (réf. appel non trouvée)", semaine: "S25", date: "2026-06-16", ecart: "Non conforme — Mise en relation", statut: "À traiter", action: "", dateDebrief: "", constat: "Une seule tentative de contact du magasin.", managerDispatch: "Non trouvé dans le dispatch Juillet", manager: "Non trouvé", alerte: "" },
@@ -216,12 +228,12 @@ const SEED_ECARTS = [
   { id: 42, indicateur: "NCC / Satisfaction Client", conseiller: "Rojo", reference: "18679995", semaine: "S28 (partiel, Mada)", date: "", ecart: "Note client = 1/10 — qualité de la réponse", statut: "OK", action: "Mauvais traitement réalisé", dateDebrief: "2026-07-08", constat: "Demande de contact magasin restée sans suite ; aucun rappel reçu.", managerDispatch: "Rojo", manager: "Rojo", alerte: "" },
   { id: 43, indicateur: "NCC / Satisfaction Client", conseiller: "Huguette", reference: "18817789", semaine: "S28 (partiel, Mada)", date: "", ecart: "Note client = 1/10 — qualité de la réponse", statut: "À traiter", action: "", dateDebrief: "", constat: "Pas de commentaire client renseigné.", managerDispatch: "Christopha", manager: "Christopha", alerte: "" },
   { id: 44, indicateur: "NCC / Satisfaction Client", conseiller: "Rosa", reference: "18810320", semaine: "S28 (partiel, Mada)", date: "", ecart: "Note client = 3/10 — compréhension de la demande", statut: "À traiter", action: "Debrief à réaliser", dateDebrief: "", constat: "Aucune réponse apportée avant fermeture de la demande.", managerDispatch: "Ibra", manager: "Ibra", alerte: "" },
-  { id: 45, indicateur: "NCC / Satisfaction Client", conseiller: "Mihanta", reference: "18787267", semaine: "S28 (partiel, Mada)", date: "", ecart: "Note client = 2/10 — qualité de la réponse", statut: "À traiter", action: "Débrief à réaliser // Geste métier à revoir", dateDebrief: "", constat: "Client indique avoir résolu son problème en 5 min au magasin.", managerDispatch: "Haingo Fi", manager: "Haingo Fi", alerte: "" },
+  { id: 45, indicateur: "NCC / Satisfaction Client", conseiller: "Mihanta", reference: "18787267", semaine: "S28 (partiel, Mada)", date: "", ecart: "Note client = 2/10 — qualité de la réponse", statut: "À traiter", action: "Débrief à réaliser // Geste métier à revoir", dateDebrief: "", constat: "Client indique avoir résolu son problème en 5 min au magasin.", managerDispatch: "Rojo (répartition d'équipe)", manager: "Rojo", alerte: "" },
   { id: 46, indicateur: "NCC / Satisfaction Client", conseiller: "Angela", reference: "18767641", semaine: "S28 (partiel, Mada)", date: "", ecart: "Note client = 0/10 — qualité de la réponse", statut: "À traiter", action: "Débrief à réaliser // Geste métier à revoir", dateDebrief: "", constat: "Commande annulée (1500€) puis rétablie sans explication claire.", managerDispatch: "Ibra", manager: "Ibra", alerte: "⚠ 4 signalements NCC cette semaine (même conseillère)" },
-  { id: 47, indicateur: "NCC / Satisfaction Client", conseiller: "Harizo", reference: "18824412", semaine: "S28 (partiel, Mada)", date: "", ecart: "Note client = 0/10 — compréhension de la demande", statut: "À traiter", action: "Débrief à réaliser // Appel sortant à réaliser", dateDebrief: "", constat: "Pas de commentaire client renseigné.", managerDispatch: "Haingo Fi", manager: "Haingo Fi", alerte: "" },
+  { id: 47, indicateur: "NCC / Satisfaction Client", conseiller: "Harizo", reference: "18824412", semaine: "S28 (partiel, Mada)", date: "", ecart: "Note client = 0/10 — compréhension de la demande", statut: "À traiter", action: "Débrief à réaliser // Appel sortant à réaliser", dateDebrief: "", constat: "Pas de commentaire client renseigné.", managerDispatch: "Ibra (répartition d'équipe)", manager: "Ibra", alerte: "" },
   { id: 48, indicateur: "NCC / Satisfaction Client", conseiller: "Rosa", reference: "18808070", semaine: "S28 (partiel, Mada)", date: "", ecart: "Note client = 1/10 — qualité de la réponse", statut: "À traiter", action: "Débrief à réaliser", dateDebrief: "", constat: "Pas de commentaire client renseigné.", managerDispatch: "Ibra", manager: "Ibra", alerte: "" },
   { id: 49, indicateur: "NCC / Satisfaction Client", conseiller: "Angela", reference: "18825633", semaine: "S28 (partiel, Mada)", date: "", ecart: "Note client = 0/10 — respect des promesses", statut: "À traiter", action: "Debrief à réaliser // Process à revoir", dateDebrief: "", constat: "Chat en ligne jugé inefficace ; aucune promesse de suivi tenue.", managerDispatch: "Ibra", manager: "Ibra", alerte: "⚠ 4 signalements NCC cette semaine (même conseillère)" },
-  { id: 50, indicateur: "NCC / Satisfaction Client", conseiller: "Avotra", reference: "18806956", semaine: "S28 (partiel, Mada)", date: "", ecart: "Note client = 0/10 — qualité de la réponse", statut: "À traiter", action: "Debrief à réaliser // Manque de vérification", dateDebrief: "", constat: "Aucune action réalisée malgré un dossier classé comme traité.", managerDispatch: "Rojo ou Ibra (2 candidats)", manager: "À confirmer", alerte: "" },
+  { id: 50, indicateur: "NCC / Satisfaction Client", conseiller: "Avotra", reference: "18806956", semaine: "S28 (partiel, Mada)", date: "", ecart: "Note client = 0/10 — qualité de la réponse", statut: "À traiter", action: "Debrief à réaliser // Manque de vérification", dateDebrief: "", constat: "Aucune action réalisée malgré un dossier classé comme traité.", managerDispatch: "Ibra (répartition d'équipe)", manager: "Ibra", alerte: "" },
   { id: 51, indicateur: "NCC / Satisfaction Client", conseiller: "Angela", reference: "18826152", semaine: "S28 (partiel, Mada)", date: "", ecart: "Note client = 0/10 — qualité de la réponse", statut: "À traiter", action: "Débrief à réaliser // Manque de vérification", dateDebrief: "", constat: "Déni de responsabilité sur l'annulation de commande.", managerDispatch: "Ibra", manager: "Ibra", alerte: "⚠ 4 signalements NCC cette semaine (même conseillère)" },
   { id: 52, indicateur: "NCC / Satisfaction Client", conseiller: "Angela", reference: "18828203", semaine: "S28 (partiel, Mada)", date: "", ecart: "Note client = 1/10 — compréhension de la demande", statut: "À traiter", action: "Débrief à réaliser // Mauvais geste métier", dateDebrief: "", constat: "Client indique ne plus vouloir formuler de remarques.", managerDispatch: "Ibra", manager: "Ibra", alerte: "⚠ 4 signalements NCC cette semaine (même conseillère)" },
   { id: 53, indicateur: "NCC / Satisfaction Client", conseiller: "Mickael", reference: "18823367", semaine: "S28 (partiel, Mada)", date: "", ecart: "Note client = 2/10 — qualité de la réponse", statut: "OK", action: "Process et geste métier revus avec l'agent", dateDebrief: "2026-07-09", constat: "Problème de cagnotte carte non résolu par téléphone.", managerDispatch: "Ibra", manager: "Non trouvé", alerte: "" },
@@ -391,6 +403,53 @@ function getConseillerStatus(conseiller, roster){
 function getConseillerManagerFromRoster(conseiller, roster){
   const entry = findRosterEntry(conseiller, roster);
   return entry ? entry.manager : null;
+}
+
+function getRosterConseillerList(roster){
+  const seen = new Map();
+  (roster || []).forEach((r) => {
+    const key = normalizeName(r.conseiller);
+    if (key && !seen.has(key)) seen.set(key, r);
+  });
+  return [...seen.values()];
+}
+
+function displayConseillerName(rosterConseillerField){
+  return String(rosterConseillerField).split(" TER_")[0].split(" PST32")[0].trim();
+}
+
+function computeConseillerBreakdown(ecarts, roster, visibleIndicators){
+  const list = getRosterConseillerList(roster);
+  return list
+    .filter((r) => r.manager !== "RAS") // on exclut les conseillers partis (pas de manager actif)
+    .map((r) => {
+      const matching = ecarts.filter((e) =>
+        normalizeName(e.conseiller) === normalizeName(r.conseiller) && visibleIndicators.has(e.indicateur)
+      );
+      const done = matching.filter((e) => e.statut === "OK" || e.statut === "KO").length;
+      const indicateursTouches = [...new Set(matching.map((e) => e.indicateur))];
+      return {
+        conseiller: displayConseillerName(r.conseiller),
+        manager: r.manager,
+        statutEquipe: r.statut,
+        total: matching.length,
+        done,
+        indicateursTouches,
+      };
+    });
+}
+
+function computeTeamBreakdown(conseillerBreakdown){
+  const map = {};
+  conseillerBreakdown.forEach((c) => {
+    const key = c.manager || "Non trouvé";
+    if (!map[key]) map[key] = { manager: key, total: 0, done: 0, nbConseillers: 0, nbEnEcart: 0 };
+    map[key].total += c.total;
+    map[key].done += c.done;
+    map[key].nbConseillers += 1;
+    if (c.total > 0) map[key].nbEnEcart += 1;
+  });
+  return Object.values(map).sort((a, b) => b.total - a.total);
 }
 
 /* ============================================================
@@ -850,9 +909,12 @@ function ReportingView({ ecarts, weekly, roster }) {
 /* ============================================================
    VUE : SUIVI DE LA PERFORMANCE
    ============================================================ */
-function PerformanceView({ ecarts, weekly }) {
+function PerformanceView({ ecarts, weekly, roster }) {
   const [granularity, setGranularity] = useState("semaine");
   const [visibleIndicators, setVisibleIndicators] = useState(() => new Set(INDICATEURS));
+  const [fManager, setFManager] = useState("Tous");
+  const [fConseiller, setFConseiller] = useState("Tous");
+  const [onlyEnEcart, setOnlyEnEcart] = useState(false);
   const series = INDICATEURS
     .map((k, i) => ({ key: k, color: SERIES_COLORS[i] }))
     .filter((s) => visibleIndicators.has(s.key));
@@ -862,6 +924,35 @@ function PerformanceView({ ecarts, weekly }) {
     [ecarts, visibleIndicators]
   );
   const daily = useMemo(() => computeDaily(filteredEcartsForDaily), [filteredEcartsForDaily]);
+
+  const managerOptions = useMemo(() => {
+    const set = new Set((roster || []).map((r) => r.manager).filter((m) => m && m !== "RAS"));
+    return [...set].sort();
+  }, [roster]);
+  const conseillerOptions = useMemo(() => {
+    return getRosterConseillerList(roster)
+      .filter((r) => r.manager !== "RAS")
+      .filter((r) => fManager === "Tous" || r.manager === fManager)
+      .map((r) => displayConseillerName(r.conseiller))
+      .sort();
+  }, [roster, fManager]);
+
+  const conseillerBreakdownAll = useMemo(
+    () => computeConseillerBreakdown(ecarts, roster, visibleIndicators),
+    [ecarts, roster, visibleIndicators]
+  );
+  const conseillerBreakdown = useMemo(() => conseillerBreakdownAll.filter((c) => {
+    if (fManager !== "Tous" && c.manager !== fManager) return false;
+    if (fConseiller !== "Tous" && c.conseiller !== fConseiller) return false;
+    if (onlyEnEcart && c.total === 0) return false;
+    return true;
+  }).sort((a, b) => b.total - a.total), [conseillerBreakdownAll, fManager, fConseiller, onlyEnEcart]);
+  const teamBreakdown = useMemo(() => computeTeamBreakdown(conseillerBreakdownAll.filter((c) => {
+    if (fManager !== "Tous" && c.manager !== fManager) return false;
+    return true;
+  })), [conseillerBreakdownAll, fManager]);
+
+  const objectifsSelectionnes = INDICATEURS.filter((k) => visibleIndicators.has(k)).map((k) => `${k} : ${OBJECTIFS[k]}${k.includes("NCC") ? "/10" : "%"}`);
 
   function toggleIndicator(key){
     setVisibleIndicators((prev) => {
@@ -946,6 +1037,94 @@ function PerformanceView({ ecarts, weekly }) {
           </div>
         </div>
       )}
+
+      <div style={{marginTop:28}}>
+        <SectionTitle icon="🧑‍🤝‍🧑">Résultats par conseiller et par équipe</SectionTitle>
+
+        <div className="filters" style={{marginBottom:10}}>
+          <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600}}>Manager :</span>
+          <select value={fManager} onChange={(e) => { setFManager(e.target.value); setFConseiller("Tous"); }}>
+            <option>Tous</option>
+            {managerOptions.map((m) => <option key={m}>{m}</option>)}
+          </select>
+          <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600, marginLeft:8}}>Conseiller :</span>
+          <select value={fConseiller} onChange={(e) => setFConseiller(e.target.value)}>
+            <option>Tous</option>
+            {conseillerOptions.map((c) => <option key={c}>{c}</option>)}
+          </select>
+          <label style={{display:"flex", alignItems:"center", gap:6, fontSize:13, marginLeft:8, cursor:"pointer"}}>
+            <input type="checkbox" checked={onlyEnEcart} onChange={(e) => setOnlyEnEcart(e.target.checked)} />
+            Agents en écart de l'objectif uniquement
+          </label>
+        </div>
+
+        {!roster || roster.length === 0 ? (
+          <div className="notice warn" style={{marginBottom:14}}>
+            <span className="ic">⚠</span>
+            <div>Aucune répartition d'équipe chargée — importe-la dans l'onglet Importer pour voir les résultats par conseiller et par équipe.</div>
+          </div>
+        ) : (
+          <div className="notice info" style={{marginBottom:14}}>
+            <span className="ic">ℹ</span>
+            <div>Objectifs des indicateurs actuellement affichés : {objectifsSelectionnes.join(" · ")}. Un conseiller
+            est considéré « en écart » dès qu'il a au moins un écart constaté sur les indicateurs sélectionnés
+            (le nombre exact d'évaluations conformes n'est pas disponible pour calculer un taux individuel précis).</div>
+          </div>
+        )}
+
+        <div className="grid-2col" style={{display:"grid", gridTemplateColumns:"1.4fr 1fr", gap:16}}>
+          <div className="card" style={{padding:0, overflow:"hidden"}}>
+            <div style={{padding:"12px 14px", fontSize:13, fontWeight:600, color:"var(--purpleDark)", borderBottom:"1px solid var(--greyLine)"}}>
+              Par conseiller ({conseillerBreakdown.length})
+            </div>
+            <div style={{overflowX:"auto", maxHeight:420, overflowY:"auto"}}>
+              <table>
+                <thead>
+                  <tr>{["Conseiller","Manager","Équipe","Nb écarts","Débriefés"].map((h) => <th key={h}>{h}</th>)}</tr>
+                </thead>
+                <tbody>
+                  {conseillerBreakdown.map((c, i) => (
+                    <tr key={c.conseiller+i} style={{backgroundColor: c.total>0 ? "var(--redSoft)" : (i%2 ? "var(--grey)" : "#fff")}}>
+                      <td>{c.conseiller}</td>
+                      <td>{c.manager}</td>
+                      <td style={{fontSize:12, color:"var(--textMuted)"}}>{c.statutEquipe || "—"}</td>
+                      <td style={{fontWeight:600, color: c.total>0 ? "var(--red)" : "var(--green)"}}>{c.total}</td>
+                      <td>{c.total>0 ? `${c.done}/${c.total}` : "—"}</td>
+                    </tr>
+                  ))}
+                  {conseillerBreakdown.length === 0 && (
+                    <tr><td colSpan="5" style={{textAlign:"center", padding:20, color:"var(--textMuted)"}}>Aucun conseiller ne correspond à ces filtres.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="card" style={{padding:0, overflow:"hidden"}}>
+            <div style={{padding:"12px 14px", fontSize:13, fontWeight:600, color:"var(--purpleDark)", borderBottom:"1px solid var(--greyLine)"}}>
+              Par équipe
+            </div>
+            <table>
+              <thead>
+                <tr>{["Manager","Conseillers en écart","Nb écarts","Débriefés"].map((h) => <th key={h}>{h}</th>)}</tr>
+              </thead>
+              <tbody>
+                {teamBreakdown.map((t, i) => (
+                  <tr key={t.manager} style={{backgroundColor: i%2 ? "var(--grey)" : "#fff"}}>
+                    <td style={{fontWeight:500}}>{t.manager}</td>
+                    <td>{t.nbEnEcart}/{t.nbConseillers}</td>
+                    <td style={{fontWeight:600, color: t.total>0 ? "var(--red)" : "var(--green)"}}>{t.total}</td>
+                    <td>{t.total>0 ? `${t.done}/${t.total}` : "—"}</td>
+                  </tr>
+                ))}
+                {teamBreakdown.length === 0 && (
+                  <tr><td colSpan="4" style={{textAlign:"center", padding:20, color:"var(--textMuted)"}}>—</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1218,7 +1397,7 @@ function ImportView({ ecarts, setEcarts, onImportJSON, roster, setRoster }) {
   function downloadRosterTemplate(){
     exportCSV([
       { Conseiller:"Rosa", Manager:"Ibra", Site:"MADA", Statut:"Ancien", "Date d'entrée en prod":"" },
-      { Conseiller:"Jacky", Manager:"Hery", Site:"MADA", Statut:"Nouveau", "Date d'entrée en prod":"2026-06-01" },
+      { Conseiller:"Jacky", Manager:"Rojo", Site:"MADA", Statut:"Nouveau", "Date d'entrée en prod":"2026-06-01" },
     ], "modele_repartition_equipes.csv");
   }
 
@@ -1580,7 +1759,7 @@ function App(){
 
       <div className="wrap content">
         {tab === "reporting" && <ReportingView ecarts={ecarts} weekly={weekly} roster={roster} />}
-        {tab === "performance" && <PerformanceView ecarts={ecarts} weekly={weekly} />}
+        {tab === "performance" && <PerformanceView ecarts={ecarts} weekly={weekly} roster={roster} />}
         {tab === "debriefing" && <DebriefingView ecarts={ecarts} setEcarts={setEcarts} weekly={weekly} onSaveNow={saveNow} />}
         {tab === "import" && <ImportView ecarts={ecarts} setEcarts={setEcarts} onImportJSON={importFromJSON} roster={roster} setRoster={setRoster} />}
         {tab === "export" && <ExportView ecarts={ecarts} weekly={weekly} roster={roster} />}

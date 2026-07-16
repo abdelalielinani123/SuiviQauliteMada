@@ -39,7 +39,6 @@
 };
 
 
-
   const isConfigured = firebaseConfig.apiKey !== "COLLE_TA_CLE_API_ICI";
   window.__firebaseConfigured = isConfigured;
 
@@ -668,6 +667,16 @@ function LineChartMulti({ data, series, height=340, xKey="semaine" }) {
           if (v === null || v === undefined) return null;
           return <circle key={s.key+i} cx={xFor(i)} cy={yFor(v)} r="2.6" fill={s.color} />;
         }))}
+        {series.map((s) => data.map((row, i) => {
+          const v = row[s.key];
+          if (v === null || v === undefined) return null;
+          const label = s.key.includes("NCC") ? (v/10).toFixed(1) : (Number.isInteger(v) ? v : v.toFixed(1)) + "%";
+          return (
+            <text key={"lbl"+s.key+i} x={xFor(i)} y={yFor(v)-7} fontSize="8.5" fontWeight="600" textAnchor="middle" fill={s.color}>
+              {label}
+            </text>
+          );
+        }))}
         {data.map((row, i) => (
           <text key={i} x={xFor(i)} y={H-padB+16} fontSize="10" textAnchor="middle" fill="#6B6270">{row[xKey]}</text>
         ))}
@@ -906,6 +915,57 @@ function ReportingView({ ecarts, weekly, roster }) {
   );
 }
 
+function parseScoreFromEcart(e){
+  if (e.indicateur === "Hubicus Voix" || e.indicateur === "Hubicus Mail") {
+    const m = e.ecart.match(/Note\s*=\s*([\d.]+)%/);
+    return m ? { value: parseFloat(m[1]), unit: "%" } : null;
+  }
+  if (e.indicateur === "NCC / Satisfaction Client") {
+    const m = e.ecart.match(/Note client\s*=\s*([\d.]+)\/10/);
+    return m ? { value: parseFloat(m[1]), unit: "/10" } : null;
+  }
+  return null; // Process Auchan/Interne, Transfert : pas de note numérique par ligne, seulement OK/KO/SI
+}
+
+function computeConseillerScoreBreakdown(ecarts, roster, kpi){
+  const list = getRosterConseillerList(roster).filter((r) => r.manager !== "RAS");
+  return list.map((r) => {
+    const matching = ecarts.filter((e) =>
+      normalizeName(e.conseiller) === normalizeName(r.conseiller) && e.indicateur === kpi
+    );
+    const done = matching.filter((e) => e.statut === "OK" || e.statut === "KO").length;
+    const scores = matching.map(parseScoreFromEcart).filter(Boolean);
+    const avgScore = scores.length ? scores.reduce((a, b) => a + b.value, 0) / scores.length : null;
+    const unit = scores.length ? scores[0].unit : (kpi.includes("NCC") ? "/10" : "%");
+    return {
+      conseiller: displayConseillerName(r.conseiller),
+      manager: r.manager,
+      statutEquipe: r.statut,
+      total: matching.length,
+      done,
+      avgScore, unit,
+      hasNumericScore: scores.length > 0,
+    };
+  });
+}
+
+function computeTeamScoreBreakdown(conseillerScoreBreakdown){
+  const map = {};
+  conseillerScoreBreakdown.forEach((c) => {
+    const key = c.manager || "Non trouvé";
+    if (!map[key]) map[key] = { manager: key, total: 0, done: 0, nbConseillers: 0, nbEnEcart: 0, scores: [], unit: c.unit };
+    map[key].total += c.total;
+    map[key].done += c.done;
+    map[key].nbConseillers += 1;
+    if (c.total > 0) map[key].nbEnEcart += 1;
+    if (c.avgScore !== null) map[key].scores.push(c.avgScore);
+  });
+  return Object.values(map).map((t) => ({
+    ...t,
+    avgScore: t.scores.length ? t.scores.reduce((a,b) => a+b, 0)/t.scores.length : null,
+  })).sort((a, b) => b.total - a.total);
+}
+
 /* ============================================================
    VUE : SUIVI DE LA PERFORMANCE
    ============================================================ */
@@ -915,13 +975,23 @@ function PerformanceView({ ecarts, weekly, roster }) {
   const [fManager, setFManager] = useState("Tous");
   const [fConseiller, setFConseiller] = useState("Tous");
   const [onlyEnEcart, setOnlyEnEcart] = useState(false);
+  const [kpiFilter, setKpiFilter] = useState(INDICATEURS[0]);
+  const [granBreakdown, setGranBreakdown] = useState("tous");
+  const [periodBreakdown, setPeriodBreakdown] = useState("Toutes");
+
   const series = INDICATEURS
     .map((k, i) => ({ key: k, color: SERIES_COLORS[i] }))
     .filter((s) => visibleIndicators.has(s.key));
   const monthly = useMemo(() => computeMonthly(weekly), [weekly]);
+
+  const ecartsManagerFiltered = useMemo(() => {
+    if (fManager === "Tous") return ecarts;
+    return ecarts.filter((e) => getConseillerManagerFromRoster(e.conseiller, roster) === fManager);
+  }, [ecarts, fManager, roster]);
+
   const filteredEcartsForDaily = useMemo(
-    () => ecarts.filter((e) => visibleIndicators.has(e.indicateur)),
-    [ecarts, visibleIndicators]
+    () => ecartsManagerFiltered.filter((e) => visibleIndicators.has(e.indicateur)),
+    [ecartsManagerFiltered, visibleIndicators]
   );
   const daily = useMemo(() => computeDaily(filteredEcartsForDaily), [filteredEcartsForDaily]);
 
@@ -937,9 +1007,33 @@ function PerformanceView({ ecarts, weekly, roster }) {
       .sort();
   }, [roster, fManager]);
 
+  const weekOptionsB = useMemo(() => {
+    const set = new Set(ecarts.map((e) => extractWeekCode(e.semaine)).filter(Boolean));
+    return [...set].sort();
+  }, [ecarts]);
+  const monthOptionsB = useMemo(() => {
+    const set = new Set(ecarts.map((e) => weekToMonth(e.semaine)).filter(Boolean));
+    return MONTH_ORDER.filter((m) => set.has(m));
+  }, [ecarts]);
+  const dayOptionsB = useMemo(() => {
+    const set = new Set(ecarts.map((e) => e.date).filter(Boolean));
+    return [...set].sort();
+  }, [ecarts]);
+
+  const ecartsForBreakdown = useMemo(() => {
+    return ecarts.filter((e) => {
+      if (granBreakdown !== "tous" && periodBreakdown !== "Toutes") {
+        if (granBreakdown === "semaine" && extractWeekCode(e.semaine) !== periodBreakdown) return false;
+        if (granBreakdown === "mois" && weekToMonth(e.semaine) !== periodBreakdown) return false;
+        if (granBreakdown === "jour" && e.date !== periodBreakdown) return false;
+      }
+      return true;
+    });
+  }, [ecarts, granBreakdown, periodBreakdown]);
+
   const conseillerBreakdownAll = useMemo(
-    () => computeConseillerBreakdown(ecarts, roster, visibleIndicators),
-    [ecarts, roster, visibleIndicators]
+    () => computeConseillerScoreBreakdown(ecartsForBreakdown, roster, kpiFilter),
+    [ecartsForBreakdown, roster, kpiFilter]
   );
   const conseillerBreakdown = useMemo(() => conseillerBreakdownAll.filter((c) => {
     if (fManager !== "Tous" && c.manager !== fManager) return false;
@@ -947,12 +1041,13 @@ function PerformanceView({ ecarts, weekly, roster }) {
     if (onlyEnEcart && c.total === 0) return false;
     return true;
   }).sort((a, b) => b.total - a.total), [conseillerBreakdownAll, fManager, fConseiller, onlyEnEcart]);
-  const teamBreakdown = useMemo(() => computeTeamBreakdown(conseillerBreakdownAll.filter((c) => {
+  const teamBreakdown = useMemo(() => computeTeamScoreBreakdown(conseillerBreakdownAll.filter((c) => {
     if (fManager !== "Tous" && c.manager !== fManager) return false;
     return true;
   })), [conseillerBreakdownAll, fManager]);
 
-  const objectifsSelectionnes = INDICATEURS.filter((k) => visibleIndicators.has(k)).map((k) => `${k} : ${OBJECTIFS[k]}${k.includes("NCC") ? "/10" : "%"}`);
+  const objectifKpi = `${OBJECTIFS[kpiFilter]}${kpiFilter.includes("NCC") ? "/10" : "%"}`;
+  const kpiHasNumericScore = kpiFilter === "Hubicus Voix" || kpiFilter === "Hubicus Mail" || kpiFilter.includes("NCC");
 
   function toggleIndicator(key){
     setVisibleIndicators((prev) => {
@@ -1000,6 +1095,19 @@ function PerformanceView({ ecarts, weekly, roster }) {
         ))}
       </div>
 
+      <div className="filters" style={{marginBottom:16}}>
+        <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600}}>Manager :</span>
+        <select value={fManager} onChange={(e) => { setFManager(e.target.value); setFConseiller("Tous"); }}>
+          <option>Tous</option>
+          {managerOptions.map((m) => <option key={m}>{m}</option>)}
+        </select>
+        {fManager !== "Tous" && (
+          <span style={{fontSize:11, color:"var(--textMuted)"}}>
+            (s'applique à la vue Jour ci-dessous ; les vues Semaine et Mois restent globales, non disponibles par manager)
+          </span>
+        )}
+      </div>
+
       {granularity === "semaine" && (
         <div className="card">
           <div style={{fontSize:13, fontWeight:600, color:"var(--purpleDark)", marginBottom:10}}>
@@ -1042,7 +1150,11 @@ function PerformanceView({ ecarts, weekly, roster }) {
         <SectionTitle icon="🧑‍🤝‍🧑">Résultats par conseiller et par équipe</SectionTitle>
 
         <div className="filters" style={{marginBottom:10}}>
-          <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600}}>Manager :</span>
+          <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600}}>KPI :</span>
+          <select value={kpiFilter} onChange={(e) => setKpiFilter(e.target.value)}>
+            {INDICATEURS.map((k) => <option key={k}>{k}</option>)}
+          </select>
+          <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600, marginLeft:8}}>Manager :</span>
           <select value={fManager} onChange={(e) => { setFManager(e.target.value); setFConseiller("Tous"); }}>
             <option>Tous</option>
             {managerOptions.map((m) => <option key={m}>{m}</option>)}
@@ -1052,7 +1164,16 @@ function PerformanceView({ ecarts, weekly, roster }) {
             <option>Tous</option>
             {conseillerOptions.map((c) => <option key={c}>{c}</option>)}
           </select>
-          <label style={{display:"flex", alignItems:"center", gap:6, fontSize:13, marginLeft:8, cursor:"pointer"}}>
+        </div>
+
+        <PeriodFilter
+          granularity={granBreakdown} setGranularity={setGranBreakdown}
+          value={periodBreakdown} setValue={setPeriodBreakdown}
+          weekOptions={weekOptionsB} monthOptions={monthOptionsB} dayOptions={dayOptionsB}
+        />
+
+        <div className="filters" style={{marginBottom:10, marginTop:-8}}>
+          <label style={{display:"flex", alignItems:"center", gap:6, fontSize:13, cursor:"pointer"}}>
             <input type="checkbox" checked={onlyEnEcart} onChange={(e) => setOnlyEnEcart(e.target.checked)} />
             Agents en écart de l'objectif uniquement
           </label>
@@ -1066,21 +1187,23 @@ function PerformanceView({ ecarts, weekly, roster }) {
         ) : (
           <div className="notice info" style={{marginBottom:14}}>
             <span className="ic">ℹ</span>
-            <div>Objectifs des indicateurs actuellement affichés : {objectifsSelectionnes.join(" · ")}. Un conseiller
-            est considéré « en écart » dès qu'il a au moins un écart constaté sur les indicateurs sélectionnés
-            (le nombre exact d'évaluations conformes n'est pas disponible pour calculer un taux individuel précis).</div>
+            <div>Objectif {kpiFilter} : <strong>{objectifKpi}</strong>.{" "}
+            {kpiHasNumericScore
+              ? "Le score affiché est la note moyenne des évaluations en écart de ce conseiller (pas sa moyenne générale) — un conseiller sans écart n'a pas de score calculable, il n'apparaît qu'avec « — »."
+              : "Cet indicateur ne fournit pas de note chiffrée par évaluation (seulement Conforme/Non conforme) : le nombre d'écarts est affiché faute de taux individuel calculable."}
+            </div>
           </div>
         )}
 
         <div className="grid-2col" style={{display:"grid", gridTemplateColumns:"1.4fr 1fr", gap:16}}>
           <div className="card" style={{padding:0, overflow:"hidden"}}>
             <div style={{padding:"12px 14px", fontSize:13, fontWeight:600, color:"var(--purpleDark)", borderBottom:"1px solid var(--greyLine)"}}>
-              Par conseiller ({conseillerBreakdown.length})
+              Par conseiller ({conseillerBreakdown.length}) — {kpiFilter}
             </div>
             <div style={{overflowX:"auto", maxHeight:420, overflowY:"auto"}}>
               <table>
                 <thead>
-                  <tr>{["Conseiller","Manager","Équipe","Nb écarts","Débriefés"].map((h) => <th key={h}>{h}</th>)}</tr>
+                  <tr>{["Conseiller","Manager","Équipe","Score","Objectif","Débriefés"].map((h) => <th key={h}>{h}</th>)}</tr>
                 </thead>
                 <tbody>
                   {conseillerBreakdown.map((c, i) => (
@@ -1088,12 +1211,17 @@ function PerformanceView({ ecarts, weekly, roster }) {
                       <td>{c.conseiller}</td>
                       <td>{c.manager}</td>
                       <td style={{fontSize:12, color:"var(--textMuted)"}}>{c.statutEquipe || "—"}</td>
-                      <td style={{fontWeight:600, color: c.total>0 ? "var(--red)" : "var(--green)"}}>{c.total}</td>
+                      <td style={{fontWeight:600, color: c.total>0 ? "var(--red)" : "var(--green)"}}>
+                        {kpiHasNumericScore
+                          ? (c.avgScore !== null ? `${c.avgScore.toFixed(1)}${c.unit}` : "—")
+                          : (c.total > 0 ? `${c.total} écart(s)` : "0 écart")}
+                      </td>
+                      <td style={{fontSize:12, color:"var(--textMuted)"}}>{objectifKpi}</td>
                       <td>{c.total>0 ? `${c.done}/${c.total}` : "—"}</td>
                     </tr>
                   ))}
                   {conseillerBreakdown.length === 0 && (
-                    <tr><td colSpan="5" style={{textAlign:"center", padding:20, color:"var(--textMuted)"}}>Aucun conseiller ne correspond à ces filtres.</td></tr>
+                    <tr><td colSpan="6" style={{textAlign:"center", padding:20, color:"var(--textMuted)"}}>Aucun conseiller ne correspond à ces filtres.</td></tr>
                   )}
                 </tbody>
               </table>
@@ -1102,19 +1230,23 @@ function PerformanceView({ ecarts, weekly, roster }) {
 
           <div className="card" style={{padding:0, overflow:"hidden"}}>
             <div style={{padding:"12px 14px", fontSize:13, fontWeight:600, color:"var(--purpleDark)", borderBottom:"1px solid var(--greyLine)"}}>
-              Par équipe
+              Par équipe — {kpiFilter}
             </div>
             <table>
               <thead>
-                <tr>{["Manager","Conseillers en écart","Nb écarts","Débriefés"].map((h) => <th key={h}>{h}</th>)}</tr>
+                <tr>{["Manager","Conseillers en écart","Score équipe","Objectif"].map((h) => <th key={h}>{h}</th>)}</tr>
               </thead>
               <tbody>
                 {teamBreakdown.map((t, i) => (
                   <tr key={t.manager} style={{backgroundColor: i%2 ? "var(--grey)" : "#fff"}}>
                     <td style={{fontWeight:500}}>{t.manager}</td>
                     <td>{t.nbEnEcart}/{t.nbConseillers}</td>
-                    <td style={{fontWeight:600, color: t.total>0 ? "var(--red)" : "var(--green)"}}>{t.total}</td>
-                    <td>{t.total>0 ? `${t.done}/${t.total}` : "—"}</td>
+                    <td style={{fontWeight:600, color: t.total>0 ? "var(--red)" : "var(--green)"}}>
+                      {kpiHasNumericScore
+                        ? (t.avgScore !== null ? `${t.avgScore.toFixed(1)}${t.unit}` : "—")
+                        : (t.total > 0 ? `${t.total} écart(s)` : "0 écart")}
+                    </td>
+                    <td style={{fontSize:12, color:"var(--textMuted)"}}>{objectifKpi}</td>
                   </tr>
                 ))}
                 {teamBreakdown.length === 0 && (

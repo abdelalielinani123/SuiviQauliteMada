@@ -39,6 +39,7 @@
 };
 
 
+
   const isConfigured = firebaseConfig.apiKey !== "COLLE_TA_CLE_API_ICI";
   window.__firebaseConfigured = isConfigured;
 
@@ -821,8 +822,8 @@ function ReportingView({ ecarts, weekly, roster }) {
     });
   }, [ecarts, granularity, periodValue, managerFilter, ancienneteFilter, roster]);
 
-  const indStats = computeIndicatorStats(ecarts);
-  const mgrStats = computeManagerStats(ecarts);
+  const indStats = computeIndicatorStats(filteredForOverview);
+  const mgrStats = computeManagerStats(filteredForOverview);
   const total = filteredForOverview.length;
   const totalDone = filteredForOverview.filter((e) => e.statut === "OK" || e.statut === "KO").length;
   const tauxGlobal = total ? Math.round((totalDone/total)*1000)/10 : 0;
@@ -879,7 +880,7 @@ function ReportingView({ ecarts, weekly, roster }) {
         </div>
         {anyFilterActive && (
           <p style={{fontSize:11, color:"var(--textMuted)", marginTop:8}}>
-            Filtres actifs sur ce bloc uniquement — les graphiques ci-dessous restent calculés sur l'ensemble des données.
+            Filtres actifs : les graphiques ci-dessous (par indicateur, par manager) sont recalculés sur la période et les critères sélectionnés.
           </p>
         )}
       </div>

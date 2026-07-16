@@ -1505,18 +1505,19 @@ function ImportView({ ecarts, setEcarts, onImportJSON, roster, setRoster }) {
           rows = Papa.parse(evt.target.result, {header:true, skipEmptyLines:true}).data;
         }
         const mapped = rows.map((r) => {
-          const conseillerRaw = r["Conseiller"] || r["conseiller"] || r["Nom complet"] || r["Diamant"] || r["Nom"] || "";
+          const conseillerRaw = r["Conseiller"] || r["conseiller"] || r["Nom complet"] || r["Diamant"] || r["Nom"] || r["log mail"] || "";
           const managerRaw = r["Manager"] || r["manager"] || "";
-          const statutRaw = r["Statut"] || r["statut"] || r["Nouveau/Ancien"] || r["Nouveau / Ancien"] || "";
+          const statutRaw = r["Statut"] || r["statut"] || r["Nouveau/Ancien"] || r["Nouveau / Ancien"] || r["Anciennét"] || r["Ancienneté"] || "";
           const dateEntree = r["Date d'entrée en prod"] || r["Date d'entrée"] || r["dateEntreeProd"] || "";
           return {
             conseiller: String(conseillerRaw).trim(),
             manager: String(managerRaw).trim(),
             site: String(r["Site"] || r["site"] || r["SITE"] || "").trim(),
-            statut: (statutRaw === "Nouveau" || statutRaw === "Ancien") ? statutRaw : "",
+            statut: ["Nouveau","Ancien","Départ"].includes(statutRaw) ? statutRaw : "",
             dateEntreeProd: dateEntree ? String(dateEntree) : "",
           };
-        }).filter((r) => r.conseiller);
+        }).filter((r) => r.conseiller)
+          .filter((r) => !r.site || /mada/i.test(r.site)); // ne conserver que le site Mada quand un site est renseigné
         setRoster(mapped);
         setRosterStatus({ok:true, msg: mapped.length+" conseiller(s) chargé(s) dans la répartition des équipes. Ce contenu remplace la répartition précédente."});
       } catch(err){

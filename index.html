@@ -39,6 +39,7 @@
 };
 
 
+
   const isConfigured = firebaseConfig.apiKey !== "COLLE_TA_CLE_API_ICI";
   window.__firebaseConfigured = isConfigured;
 
@@ -174,6 +175,18 @@ const OBJECTIFS = {
 // rencontrés dans d'anciens fichiers de dispatch (Haingo Fi, Hery, Fina) ont été retirés de partout.
 const MANAGERS = ["Christopha", "Ibra", "Rojo", "À confirmer", "Non trouvé"];
 const STATUTS = ["À traiter", "OK", "KO"];
+
+/* ============================================================
+   ACCÈS — identifiants en dur (ce fichier est statique, sans serveur :
+   ceci filtre l'usage normal, ce n'est pas une protection contre un accès malveillant).
+   Modifie les mots de passe ci-dessous avant diffusion si besoin.
+   ============================================================ */
+const AUTH_ACCOUNTS = {
+  "admin": { password: "TerseaMada2026!", role: "admin", label: "Administrateur" },
+  "mada": { password: "Auchan2026", role: "user", label: "Utilisateur" },
+};
+const STORAGE_KEY_AUTH_SESSION = "tersea_dashboard_auth_session";
+const ADMIN_ONLY_TABS = new Set(["roster", "import", "export"]);
 const STORAGE_KEY_ECARTS = "tersea_dashboard_ecarts";
 const STORAGE_KEY_WEEKLY = "tersea_dashboard_weekly";
 const STORAGE_KEY_ROSTER = "tersea_dashboard_roster";
@@ -802,34 +815,89 @@ function DayCountChart({ data, height=260 }) {
   );
 }
 
-function PeriodFilter({ granularity, setGranularity, value, setValue, weekOptions, monthOptions, dayOptions }) {
+function PeriodFilter({ granularity, setGranularity, value, setValue, weekOptions, monthOptions, dayOptions, dateRange, setDateRange, allowRange=false }) {
   const granOptions = [
     { id: "tous", label: "Toutes périodes" },
     { id: "jour", label: "Jour" },
     { id: "semaine", label: "Semaine" },
     { id: "mois", label: "Mois" },
+    ...(allowRange ? [{ id: "plage", label: "📅 Plage de dates" }] : []),
   ];
   const valueOptions = granularity === "semaine" ? weekOptions : granularity === "mois" ? monthOptions : granularity === "jour" ? dayOptions : [];
   return (
-    <div className="filters" style={{marginBottom:16}}>
+    <div className="filters" style={{marginBottom:16, flexWrap:"wrap"}}>
       <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600}}>Filtrer :</span>
       {granOptions.map((g) => (
         <button
           key={g.id}
           className="btn"
           style={granularity === g.id ? { background:"var(--purple)", color:"#fff", borderColor:"var(--purple)" } : {}}
-          onClick={() => { setGranularity(g.id); setValue("Toutes"); }}
+          onClick={() => { setGranularity(g.id); setValue([]); }}
         >
           {g.label}
         </button>
       ))}
-      {granularity !== "tous" && (
-        <select value={value} onChange={(e) => setValue(e.target.value)}>
-          <option>Toutes</option>
-          {valueOptions.map((o) => <option key={o}>{o}</option>)}
-        </select>
+      {granularity !== "tous" && granularity !== "plage" && (
+        <MultiSelectDropdown options={valueOptions} selected={value} setSelected={setValue} allLabel="Toutes" />
+      )}
+      {granularity === "plage" && setDateRange && (
+        <span style={{display:"inline-flex", alignItems:"center", gap:6}}>
+          <span style={{fontSize:12, color:"var(--textMuted)"}}>Du</span>
+          <input type="date" value={dateRange?.start || ""} onChange={(e) => setDateRange({ ...dateRange, start: e.target.value })} />
+          <span style={{fontSize:12, color:"var(--textMuted)"}}>au</span>
+          <input type="date" value={dateRange?.end || ""} onChange={(e) => setDateRange({ ...dateRange, end: e.target.value })} />
+          {(dateRange?.start || dateRange?.end) && (
+            <button className="btn" style={{padding:"2px 8px", fontSize:12}} onClick={() => setDateRange({ start:"", end:"" })}>✕ Effacer</button>
+          )}
+        </span>
       )}
     </div>
+  );
+}
+
+/* Vrai si la date (YYYY-MM-DD) tombe dans la plage [start, end] ; bornes vides = illimité de ce côté */
+function dateInRange(dateStr, range){
+  if (!dateStr || !range) return true;
+  if (range.start && dateStr < range.start) return false;
+  if (range.end && dateStr > range.end) return false;
+  return true;
+}
+
+/* Sélecteur multi-choix générique (managers, périodes, etc.) — tableau vide = "Tous" */
+function MultiSelectDropdown({ label, options, selected, setSelected, allLabel="Tous" }) {
+  const [open, setOpen] = useState(false);
+  const ref = React.useRef(null);
+  useEffect(() => {
+    function onClick(ev){ if (ref.current && !ref.current.contains(ev.target)) setOpen(false); }
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, []);
+  const allSelected = !selected || selected.length === 0;
+  function toggle(opt){
+    setSelected((prev) => (prev||[]).includes(opt) ? (prev||[]).filter((x) => x !== opt) : [...(prev||[]), opt]);
+  }
+  const summary = allSelected ? allLabel : (selected.length === 1 ? selected[0] : `${selected.length} sélectionnés`);
+  return (
+    <span ref={ref} style={{position:"relative", display:"inline-block"}}>
+      {label && <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600, marginRight:6}}>{label}</span>}
+      <button type="button" className="btn" onClick={() => setOpen((o) => !o)} style={{minWidth:110, textAlign:"left"}}>
+        {summary} <span style={{opacity:0.6}}>▾</span>
+      </button>
+      {open && (
+        <div style={{position:"absolute", zIndex:30, top:"100%", left:0, marginTop:4, background:"#fff", border:"1px solid var(--greyLine)", borderRadius:8, padding:8, minWidth:210, maxHeight:260, overflowY:"auto", boxShadow:"0 6px 20px rgba(0,0,0,0.14)"}}>
+          <label style={{display:"flex", alignItems:"center", gap:6, fontSize:13, padding:"4px 2px", cursor:"pointer", fontWeight:600}}>
+            <input type="checkbox" checked={allSelected} onChange={() => setSelected([])} /> {allLabel}
+          </label>
+          <div style={{borderTop:"1px solid var(--greyLine)", margin:"4px 0"}} />
+          {options.map((o) => (
+            <label key={o} style={{display:"flex", alignItems:"center", gap:6, fontSize:13, padding:"4px 2px", cursor:"pointer"}}>
+              <input type="checkbox" checked={!allSelected && selected.includes(o)} onChange={() => toggle(o)} /> {o}
+            </label>
+          ))}
+          {options.length === 0 && <div style={{fontSize:12, color:"var(--textMuted)", padding:"4px 2px"}}>Aucune option.</div>}
+        </div>
+      )}
+    </span>
   );
 }
 
@@ -859,8 +927,8 @@ function SectionTitle({ icon, children }) {
    ============================================================ */
 function ReportingView({ ecarts, weekly, roster }) {
   const [granularity, setGranularity] = useState("tous");
-  const [periodValue, setPeriodValue] = useState("Toutes");
-  const [managerFilter, setManagerFilter] = useState("Tous");
+  const [periodValue, setPeriodValue] = useState([]);
+  const [managerFilter, setManagerFilter] = useState([]);
   const [ancienneteFilter, setAncienneteFilter] = useState("Tous");
   const [visibleIndicators, setVisibleIndicators] = useState(() => new Set(INDICATEURS));
 
@@ -883,12 +951,12 @@ function ReportingView({ ecarts, weekly, roster }) {
 
   const filteredForOverview = useMemo(() => {
     return ecarts.filter((e) => {
-      if (granularity !== "tous" && periodValue !== "Toutes") {
-        if (granularity === "semaine" && extractWeekCode(e.semaine) !== periodValue) return false;
-        if (granularity === "mois" && weekToMonth(e.semaine) !== periodValue) return false;
-        if (granularity === "jour" && e.date !== periodValue) return false;
+      if (granularity !== "tous" && periodValue.length > 0) {
+        if (granularity === "semaine" && !periodValue.includes(extractWeekCode(e.semaine))) return false;
+        if (granularity === "mois" && !periodValue.includes(weekToMonth(e.semaine))) return false;
+        if (granularity === "jour" && !periodValue.includes(e.date)) return false;
       }
-      if (managerFilter !== "Tous" && e.manager !== managerFilter) return false;
+      if (managerFilter.length > 0 && !managerFilter.includes(e.manager)) return false;
       if (ancienneteFilter !== "Tous" && getConseillerStatus(e.conseiller, roster) !== ancienneteFilter) return false;
       return true;
     });
@@ -913,7 +981,7 @@ function ReportingView({ ecarts, weekly, roster }) {
   }
 
   const hasRoster = roster && roster.length > 0;
-  const anyFilterActive = (granularity !== "tous" && periodValue !== "Toutes") || managerFilter !== "Tous" || ancienneteFilter !== "Tous";
+  const anyFilterActive = (granularity !== "tous" && periodValue.length > 0) || managerFilter.length > 0 || ancienneteFilter !== "Tous";
 
   return (
     <div>
@@ -925,11 +993,7 @@ function ReportingView({ ecarts, weekly, roster }) {
           weekOptions={weekOptions} monthOptions={monthOptions} dayOptions={dayOptions}
         />
         <div className="filters" style={{marginBottom:16, marginTop:-8}}>
-          <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600}}>Manager :</span>
-          <select value={managerFilter} onChange={(e) => setManagerFilter(e.target.value)}>
-            <option>Tous</option>
-            {managerOptions.map((m) => <option key={m}>{m}</option>)}
-          </select>
+          <MultiSelectDropdown label="Manager :" options={managerOptions} selected={managerFilter} setSelected={setManagerFilter} />
           <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600, marginLeft:8}}>Ancienneté :</span>
           <select value={ancienneteFilter} onChange={(e) => setAncienneteFilter(e.target.value)}>
             <option>Tous</option>
@@ -1046,18 +1110,73 @@ function computeTeamScoreBreakdown(conseillerScoreBreakdown, isNumericKpi){
   })).sort((a, b) => b.total - a.total);
 }
 
+function extractWeekNum(code){
+  const m = code && String(code).match(/S(\d+)/);
+  return m ? parseInt(m[1], 10) : 999;
+}
+
+/* Calcule la tendance hebdomadaire d'un KPI, filtrée par manager(s) et/ou plage de dates —
+   utilisée pour le graphique dynamique du bloc "Résultats par conseiller et par équipe". */
+function computeKpiWeeklyTrend(ecarts, allEvaluations, kpi, managers, roster, dateRange){
+  const evalsForKpi = (allEvaluations || []).filter((ev) => ev.indicateur === kpi);
+  const hasRawData = evalsForKpi.length > 0;
+  const isNumericKpi = kpi === "Hubicus Voix" || kpi === "Hubicus Mail" || kpi.includes("NCC");
+  const bucket = {};
+
+  function inManagerScope(conseillerFull){
+    if (!managers || managers.length === 0) return true;
+    return managers.includes(getConseillerManagerFromRoster(conseillerFull, roster));
+  }
+  function ensure(wk){
+    if (!bucket[wk]) bucket[wk] = { semaine: wk, sum:0, count:0, ok:0, total:0 };
+    return bucket[wk];
+  }
+
+  if (hasRawData) {
+    evalsForKpi.forEach((ev) => {
+      if (dateRange && (dateRange.start || dateRange.end) && !dateInRange(ev.date, dateRange)) return;
+      if (!inManagerScope(ev.conseiller)) return;
+      const wk = extractWeekCode(ev.semaine);
+      if (!wk) return;
+      const b = ensure(wk);
+      if (isNumericKpi) {
+        if (ev.score !== null && ev.score !== undefined && ev.score !== "") { b.sum += Number(ev.score); b.count += 1; }
+      } else if (["OK","KO","SI"].includes(ev.statut)) {
+        b.total += 1; if (ev.statut === "OK") b.ok += 1;
+      }
+    });
+  } else {
+    ecarts.filter((e) => e.indicateur === kpi).forEach((e) => {
+      if (dateRange && (dateRange.start || dateRange.end) && !dateInRange(e.date, dateRange)) return;
+      if (managers && managers.length > 0 && !managers.includes(getEffectiveManager(e, roster))) return;
+      const wk = extractWeekCode(e.semaine);
+      if (!wk) return;
+      const parsed = parseScoreFromEcart(e);
+      if (!parsed) return;
+      const b = ensure(wk);
+      b.sum += parsed.value; b.count += 1;
+    });
+  }
+
+  return Object.values(bucket)
+    .map((b) => ({ semaine: b.semaine, score: isNumericKpi ? (b.count ? Math.round((b.sum/b.count)*10)/10 : null) : (b.total ? Math.round((b.ok/b.total)*1000)/10 : null) }))
+    .filter((b) => b.score !== null)
+    .sort((a,b) => extractWeekNum(a.semaine) - extractWeekNum(b.semaine));
+}
+
 /* ============================================================
    VUE : SUIVI DE LA PERFORMANCE
    ============================================================ */
 function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
   const [granularity, setGranularity] = useState("semaine");
   const [visibleIndicators, setVisibleIndicators] = useState(() => new Set(INDICATEURS));
-  const [fManager, setFManager] = useState("Tous");
+  const [fManager, setFManager] = useState([]);
   const [fConseiller, setFConseiller] = useState("Tous");
   const [onlyEnEcart, setOnlyEnEcart] = useState(false);
   const [kpiFilter, setKpiFilter] = useState(INDICATEURS[0]);
   const [granBreakdown, setGranBreakdown] = useState("tous");
-  const [periodBreakdown, setPeriodBreakdown] = useState("Toutes");
+  const [periodBreakdown, setPeriodBreakdown] = useState([]);
+  const [dateRangeBreakdown, setDateRangeBreakdown] = useState({ start:"", end:"" });
 
   const series = INDICATEURS
     .map((k, i) => ({ key: k, color: SERIES_COLORS[i] }))
@@ -1065,8 +1184,8 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
   const monthly = useMemo(() => computeMonthly(weekly), [weekly]);
 
   const ecartsManagerFiltered = useMemo(() => {
-    if (fManager === "Tous") return ecarts;
-    return ecarts.filter((e) => getConseillerManagerFromRoster(e.conseiller, roster) === fManager);
+    if (fManager.length === 0) return ecarts;
+    return ecarts.filter((e) => fManager.includes(getConseillerManagerFromRoster(e.conseiller, roster)));
   }, [ecarts, fManager, roster]);
 
   const filteredEcartsForDaily = useMemo(
@@ -1082,7 +1201,7 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
   const conseillerOptions = useMemo(() => {
     return getRosterConseillerList(roster)
       .filter((r) => r.manager !== "RAS")
-      .filter((r) => fManager === "Tous" || r.manager === fManager)
+      .filter((r) => fManager.length === 0 || fManager.includes(r.manager))
       .map((r) => displayConseillerName(r.conseiller))
       .sort();
   }, [roster, fManager]);
@@ -1105,24 +1224,32 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
 
   const ecartsForBreakdown = useMemo(() => {
     return ecarts.filter((e) => {
-      if (granBreakdown !== "tous" && periodBreakdown !== "Toutes") {
-        if (granBreakdown === "semaine" && extractWeekCode(e.semaine) !== periodBreakdown) return false;
-        if (granBreakdown === "mois" && weekToMonth(e.semaine) !== periodBreakdown) return false;
-        if (granBreakdown === "jour" && e.date !== periodBreakdown) return false;
+      if (granBreakdown === "plage") return dateInRange(e.date, dateRangeBreakdown);
+      if (granBreakdown !== "tous" && periodBreakdown.length > 0) {
+        if (granBreakdown === "semaine" && !periodBreakdown.includes(extractWeekCode(e.semaine))) return false;
+        if (granBreakdown === "mois" && !periodBreakdown.includes(weekToMonth(e.semaine))) return false;
+        if (granBreakdown === "jour" && !periodBreakdown.includes(e.date)) return false;
       }
       return true;
     });
-  }, [ecarts, granBreakdown, periodBreakdown]);
+  }, [ecarts, granBreakdown, periodBreakdown, dateRangeBreakdown]);
 
   const evalPeriodFilterFn = useMemo(() => {
-    if (granBreakdown === "tous" || periodBreakdown === "Toutes") return null;
+    if (granBreakdown === "plage") return (ev) => dateInRange(ev.date, dateRangeBreakdown);
+    if (granBreakdown === "tous" || periodBreakdown.length === 0) return null;
     return (ev) => {
-      if (granBreakdown === "semaine") return extractWeekCode(ev.semaine) === periodBreakdown;
-      if (granBreakdown === "mois") return weekToMonth(ev.semaine) === periodBreakdown;
-      if (granBreakdown === "jour") return ev.date === periodBreakdown;
+      if (granBreakdown === "semaine") return periodBreakdown.includes(extractWeekCode(ev.semaine));
+      if (granBreakdown === "mois") return periodBreakdown.includes(weekToMonth(ev.semaine));
+      if (granBreakdown === "jour") return periodBreakdown.includes(ev.date);
       return true;
     };
-  }, [granBreakdown, periodBreakdown]);
+  }, [granBreakdown, periodBreakdown, dateRangeBreakdown]);
+
+  /* Tendance hebdomadaire du KPI sélectionné, sur la période et le(s) manager(s) filtrés — alimente le graphique dynamique */
+  const kpiTrend = useMemo(
+    () => computeKpiWeeklyTrend(ecarts, allEvaluations, kpiFilter, fManager, roster, granBreakdown === "plage" ? dateRangeBreakdown : null),
+    [ecarts, allEvaluations, kpiFilter, fManager, roster, granBreakdown, dateRangeBreakdown]
+  );
 
   const conseillerBreakdownAll = useMemo(
     () => computeConseillerScoreBreakdown(ecartsForBreakdown, roster, kpiFilter, allEvaluations, evalPeriodFilterFn),
@@ -1137,13 +1264,13 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
   }
 
   const conseillerBreakdown = useMemo(() => conseillerBreakdownAll.filter((c) => {
-    if (fManager !== "Tous" && c.manager !== fManager) return false;
+    if (fManager.length > 0 && !fManager.includes(c.manager)) return false;
     if (fConseiller !== "Tous" && c.conseiller !== fConseiller) return false;
     if (onlyEnEcart && !isEnEcart(c)) return false;
     return true;
   }).sort((a, b) => (a.avgScore ?? 999) - (b.avgScore ?? 999)), [conseillerBreakdownAll, fManager, fConseiller, onlyEnEcart, kpiFilter]);
   const teamBreakdown = useMemo(() => computeTeamScoreBreakdown(conseillerBreakdownAll.filter((c) => {
-    if (fManager !== "Tous" && c.manager !== fManager) return false;
+    if (fManager.length > 0 && !fManager.includes(c.manager)) return false;
     return true;
   })), [conseillerBreakdownAll, fManager]);
 
@@ -1196,12 +1323,8 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
       </div>
 
       <div className="filters" style={{marginBottom:16}}>
-        <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600}}>Manager :</span>
-        <select value={fManager} onChange={(e) => { setFManager(e.target.value); setFConseiller("Tous"); }}>
-          <option>Tous</option>
-          {managerOptions.map((m) => <option key={m}>{m}</option>)}
-        </select>
-        {fManager !== "Tous" && (
+        <MultiSelectDropdown label="Manager :" options={managerOptions} selected={fManager} setSelected={(v) => { setFManager(v); setFConseiller("Tous"); }} />
+        {fManager.length > 0 && (
           <span style={{fontSize:11, color:"var(--textMuted)"}}>
             (s'applique à la vue Jour ci-dessous ; les vues Semaine et Mois restent globales, non disponibles par manager)
           </span>
@@ -1254,11 +1377,7 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
           <select value={kpiFilter} onChange={(e) => setKpiFilter(e.target.value)}>
             {INDICATEURS.map((k) => <option key={k}>{k}</option>)}
           </select>
-          <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600, marginLeft:8}}>Manager :</span>
-          <select value={fManager} onChange={(e) => { setFManager(e.target.value); setFConseiller("Tous"); }}>
-            <option>Tous</option>
-            {managerOptions.map((m) => <option key={m}>{m}</option>)}
-          </select>
+          <MultiSelectDropdown label="Manager :" options={managerOptions} selected={fManager} setSelected={(v) => { setFManager(v); setFConseiller("Tous"); }} />
           <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600, marginLeft:8}}>Conseiller :</span>
           <select value={fConseiller} onChange={(e) => setFConseiller(e.target.value)}>
             <option>Tous</option>
@@ -1270,7 +1389,21 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
           granularity={granBreakdown} setGranularity={setGranBreakdown}
           value={periodBreakdown} setValue={setPeriodBreakdown}
           weekOptions={weekOptionsB} monthOptions={monthOptionsB} dayOptions={dayOptionsB}
+          allowRange={true} dateRange={dateRangeBreakdown} setDateRange={setDateRangeBreakdown}
         />
+
+        {kpiTrend.length > 1 && (
+          <div className="card" style={{marginBottom:16}}>
+            <div style={{fontSize:13, fontWeight:600, color:"var(--purpleDark)", marginBottom:10}}>
+              Évolution de {kpiFilter} sur la période sélectionnée{fManager.length > 0 ? ` — ${fManager.join(", ")}` : ""}
+            </div>
+            <LineChartMulti
+              data={kpiTrend.map((t) => ({ semaine: t.semaine, [kpiFilter]: kpiFilter.includes("NCC") ? t.score*10 : t.score }))}
+              series={[{ key: kpiFilter, color: SERIES_COLORS[INDICATEURS.indexOf(kpiFilter)] || "var(--purple)" }]}
+              xKey="semaine"
+            />
+          </div>
+        )}
 
         <div className="filters" style={{marginBottom:10, marginTop:-8}}>
           <label style={{display:"flex", alignItems:"center", gap:6, fontSize:13, cursor:"pointer"}}>
@@ -1427,10 +1560,10 @@ function EcartDetailPanel({ e, onSave, onDelete, roster }) {
 function DebriefingView({ ecarts, setEcarts, weekly, onSaveNow, roster }) {
   const [search, setSearch] = useState("");
   const [fInd, setFInd] = useState("Tous");
-  const [fMgr, setFMgr] = useState("Tous");
+  const [fMgr, setFMgr] = useState([]);
   const [fStat, setFStat] = useState("Tous");
   const [granularity, setGranularity] = useState("tous");
-  const [periodValue, setPeriodValue] = useState("Toutes");
+  const [periodValue, setPeriodValue] = useState([]);
   const [expanded, setExpanded] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
 
@@ -1453,12 +1586,12 @@ function DebriefingView({ ecarts, setEcarts, weekly, onSaveNow, roster }) {
 
   const filtered = useMemo(() => ecarts.filter((e) => {
     if (fInd !== "Tous" && e.indicateur !== fInd) return false;
-    if (fMgr !== "Tous" && getEffectiveManager(e, roster) !== fMgr) return false;
+    if (fMgr.length > 0 && !fMgr.includes(getEffectiveManager(e, roster))) return false;
     if (fStat !== "Tous" && e.statut !== fStat) return false;
-    if (granularity !== "tous" && periodValue !== "Toutes") {
-      if (granularity === "semaine" && extractWeekCode(e.semaine) !== periodValue) return false;
-      if (granularity === "mois" && weekToMonth(e.semaine) !== periodValue) return false;
-      if (granularity === "jour" && e.date !== periodValue) return false;
+    if (granularity !== "tous" && periodValue.length > 0) {
+      if (granularity === "semaine" && !periodValue.includes(extractWeekCode(e.semaine))) return false;
+      if (granularity === "mois" && !periodValue.includes(weekToMonth(e.semaine))) return false;
+      if (granularity === "jour" && !periodValue.includes(e.date)) return false;
     }
     if (search) {
       const hay = (e.conseiller+" "+e.reference+" "+e.constat+" "+e.ecart).toLowerCase();
@@ -1498,9 +1631,7 @@ function DebriefingView({ ecarts, setEcarts, weekly, onSaveNow, roster }) {
         <select value={fInd} onChange={(e) => setFInd(e.target.value)}>
           <option>Tous</option>{INDICATEURS.map((i) => <option key={i}>{i}</option>)}
         </select>
-        <select value={fMgr} onChange={(e) => setFMgr(e.target.value)}>
-          <option>Tous</option>{managerOptionsDebrief.map((m) => <option key={m}>{m}</option>)}
-        </select>
+        <MultiSelectDropdown options={managerOptionsDebrief} selected={fMgr} setSelected={setFMgr} />
         <select value={fStat} onChange={(e) => setFStat(e.target.value)}>
           <option>Tous</option>{STATUTS.map((s) => <option key={s}>{s}</option>)}
         </select>
@@ -1736,9 +1867,11 @@ function RosterView({ roster, setRoster }) {
    ============================================================ */
 function NPSView({ nccResponses, roster }) {
   const [granularity, setGranularity] = useState("tous");
-  const [periodValue, setPeriodValue] = useState("Toutes");
-  const [fManager, setFManager] = useState("Tous");
+  const [periodValue, setPeriodValue] = useState([]);
+  const [dateRange, setDateRange] = useState({ start:"", end:"" });
+  const [fManager, setFManager] = useState([]);
   const [fAgent, setFAgent] = useState("Tous");
+  const [fEquipe, setFEquipe] = useState("Tous");
   const [onlyToAnalyze, setOnlyToAnalyze] = useState(false);
   const [expanded, setExpanded] = useState(null);
 
@@ -1747,6 +1880,7 @@ function NPSView({ nccResponses, roster }) {
   const withManager = useMemo(() => responses.map((r) => ({
     ...r,
     manager: getConseillerManagerFromRoster(r.conseillerFull, roster) || "Non trouvé",
+    equipe: getConseillerStatus(r.conseillerFull, roster),
   })), [responses, roster]);
 
   const weekOptions = useMemo(() => {
@@ -1773,18 +1907,22 @@ function NPSView({ nccResponses, roster }) {
     return [...set].sort();
   }, [withManager]);
   const agentOptions = useMemo(() => {
-    const set = new Set(withManager.filter((r) => fManager === "Tous" || r.manager === fManager).map((r) => r.conseiller));
+    const set = new Set(withManager.filter((r) => fManager.length === 0 || fManager.includes(r.manager)).map((r) => r.conseiller));
     return [...set].sort();
   }, [withManager, fManager]);
+  const equipeOptions = ["Nouveau", "Ancien", "Départ", "Non renseigné"];
 
   const filtered = useMemo(() => withManager.filter((r) => {
-    if (fManager !== "Tous" && r.manager !== fManager) return false;
+    if (fManager.length > 0 && !fManager.includes(r.manager)) return false;
     if (fAgent !== "Tous" && r.conseiller !== fAgent) return false;
-    if (granularity !== "tous" && periodValue !== "Toutes" && r.date) {
-      if (granularity === "jour" && r.date !== periodValue) return false;
-      if (granularity === "semaine" && "S"+getISOWeekLabel(new Date(r.date)) !== periodValue) return false;
-      if (granularity === "mois" && getMonthLabel(r.date) !== periodValue) return false;
-    } else if (granularity !== "tous" && periodValue !== "Toutes" && !r.date) {
+    if (fEquipe !== "Tous" && r.equipe !== fEquipe) return false;
+    if (granularity === "plage") {
+      if (!dateInRange(r.date, dateRange)) return false;
+    } else if (granularity !== "tous" && periodValue.length > 0 && r.date) {
+      if (granularity === "jour" && !periodValue.includes(r.date)) return false;
+      if (granularity === "semaine" && !periodValue.includes("S"+getISOWeekLabel(new Date(r.date)))) return false;
+      if (granularity === "mois" && !periodValue.includes(getMonthLabel(r.date))) return false;
+    } else if (granularity !== "tous" && granularity !== "plage" && periodValue.length > 0 && !r.date) {
       return false;
     }
     if (onlyToAnalyze) {
@@ -1793,7 +1931,7 @@ function NPSView({ nccResponses, roster }) {
       if (!ncc && !nps) return false;
     }
     return true;
-  }), [withManager, fManager, fAgent, granularity, periodValue, onlyToAnalyze]);
+  }), [withManager, fManager, fAgent, fEquipe, granularity, periodValue, dateRange, onlyToAnalyze]);
 
   const avgNCC = useMemo(() => {
     const withScore = filtered.filter((r) => r.scoreNCC !== null);
@@ -1823,16 +1961,18 @@ function NPSView({ nccResponses, roster }) {
         granularity={granularity} setGranularity={setGranularity}
         value={periodValue} setValue={setPeriodValue}
         weekOptions={weekOptions} monthOptions={monthOptions} dayOptions={dayOptions}
+        allowRange={true} dateRange={dateRange} setDateRange={setDateRange}
       />
 
       <div className="filters" style={{marginBottom:14, marginTop:-8}}>
-        <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600}}>Manager :</span>
-        <select value={fManager} onChange={(e) => { setFManager(e.target.value); setFAgent("Tous"); }}>
-          <option>Tous</option>{managerOptions.map((m) => <option key={m}>{m}</option>)}
-        </select>
+        <MultiSelectDropdown label="Manager :" options={managerOptions} selected={fManager} setSelected={(v) => { setFManager(v); setFAgent("Tous"); }} />
         <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600, marginLeft:8}}>Agent :</span>
         <select value={fAgent} onChange={(e) => setFAgent(e.target.value)}>
           <option>Tous</option>{agentOptions.map((a) => <option key={a}>{a}</option>)}
+        </select>
+        <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600, marginLeft:8}}>Équipe (Mada) :</span>
+        <select value={fEquipe} onChange={(e) => setFEquipe(e.target.value)}>
+          <option>Tous</option>{equipeOptions.map((s) => <option key={s}>{s}</option>)}
         </select>
         <label style={{display:"flex", alignItems:"center", gap:6, fontSize:13, marginLeft:8, cursor:"pointer"}}>
           <input type="checkbox" checked={onlyToAnalyze} onChange={(e) => setOnlyToAnalyze(e.target.checked)} />
@@ -1851,7 +1991,7 @@ function NPSView({ nccResponses, roster }) {
         <div style={{overflowX:"auto"}}>
           <table>
             <thead>
-              <tr>{["Manager","Agent","Date","N° demande","Canal","Score NCC","Score NPS"].map((h) => <th key={h}>{h}</th>)}</tr>
+              <tr>{["Manager","Agent","Équipe","Date","N° demande","Canal","Score NCC","Score NPS"].map((h) => <th key={h}>{h}</th>)}</tr>
             </thead>
             <tbody>
               {filtered.slice(0,300).map((r) => {
@@ -1861,6 +2001,7 @@ function NPSView({ nccResponses, roster }) {
                     <tr className={toAnalyze ? "alert-row" : ""}>
                       <td>{r.manager}</td>
                       <td>{r.conseiller}</td>
+                      <td style={{fontSize:12, color:"var(--textMuted)"}}>{r.equipe}</td>
                       <td style={{whiteSpace:"nowrap"}}>{r.date || "—"}</td>
                       <td>
                         <button className="btn" style={{padding:"2px 8px", fontSize:12}} onClick={() => setExpanded(expanded===r.ndemande ? null : r.ndemande)}>
@@ -1873,7 +2014,7 @@ function NPSView({ nccResponses, roster }) {
                     </tr>
                     {expanded === r.ndemande && (
                       <tr>
-                        <td colSpan="7" style={{background:"var(--purpleSoft)", padding:"12px 16px"}}>
+                        <td colSpan="8" style={{background:"var(--purpleSoft)", padding:"12px 16px"}}>
                           <div style={{fontSize:12, fontWeight:600, color:"var(--purpleDark)", marginBottom:4}}>Motif principal</div>
                           <div style={{fontSize:13, marginBottom:8}}>{r.motif || "—"}</div>
                           <div style={{fontSize:12, fontWeight:600, color:"var(--purpleDark)", marginBottom:4}}>Verbatim client</div>
@@ -1885,7 +2026,7 @@ function NPSView({ nccResponses, roster }) {
                 );
               })}
               {filtered.length === 0 && (
-                <tr><td colSpan="7" style={{textAlign:"center", padding:20, color:"var(--textMuted)"}}>Aucune réponse ne correspond à ces filtres.</td></tr>
+                <tr><td colSpan="8" style={{textAlign:"center", padding:20, color:"var(--textMuted)"}}>Aucune réponse ne correspond à ces filtres.</td></tr>
               )}
             </tbody>
           </table>
@@ -2266,7 +2407,46 @@ function ExportView({ ecarts, weekly, roster, nccResponses, allEvaluations }) {
 /* ============================================================
    APP PRINCIPALE
    ============================================================ */
+function LoginScreen({ onLogin }){
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+
+  function handleSubmit(e){
+    e.preventDefault();
+    const key = username.trim().toLowerCase();
+    const account = AUTH_ACCOUNTS[key];
+    if (account && account.password === password) {
+      setError("");
+      onLogin({ username: key, role: account.role, label: account.label });
+    } else {
+      setError("Identifiant ou mot de passe incorrect.");
+    }
+  }
+
+  return (
+    <div style={{minHeight:"100vh", display:"flex", alignItems:"center", justifyContent:"center", background:"#FAFAFB"}}>
+      <form onSubmit={handleSubmit} className="card" style={{width:340, padding:28}}>
+        <h1 style={{fontSize:17, marginBottom:4, color:"var(--purpleDark)", fontWeight:800}}>Suivi Qualité — TERSEA Madagascar</h1>
+        <p style={{fontSize:13, color:"var(--textMuted)", marginBottom:20}}>Connexion requise pour accéder au tableau de bord.</p>
+        <p className="field-label">Identifiant</p>
+        <input style={{width:"100%", marginBottom:12, boxSizing:"border-box"}} value={username} onChange={(e) => setUsername(e.target.value)} autoFocus autoComplete="username" />
+        <p className="field-label">Mot de passe</p>
+        <input type="password" style={{width:"100%", marginBottom:16, boxSizing:"border-box"}} value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
+        {error && <div className="status-msg err" style={{marginBottom:12, display:"block"}}>⚠ {error}</div>}
+        <button type="submit" className="btn primary" style={{width:"100%"}}>Se connecter</button>
+      </form>
+    </div>
+  );
+}
+
 function App(){
+  const [auth, setAuth] = useState(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY_AUTH_SESSION);
+      return raw ? JSON.parse(raw) : null;
+    } catch(err) { return null; }
+  });
   const [tab, setTab] = useState("reporting");
   const [ecarts, setEcarts] = useState(SEED_ECARTS);
   const [weekly, setWeekly] = useState(SEED_WEEKLY);
@@ -2361,7 +2541,17 @@ function App(){
     if (Array.isArray(data.toutes_evaluations)) setAllEvaluations(data.toutes_evaluations);
   }
 
-  const tabs = [
+  function handleLogin(session){
+    try { localStorage.setItem(STORAGE_KEY_AUTH_SESSION, JSON.stringify(session)); } catch(err) {}
+    setAuth(session);
+    setTab(session.role === "admin" ? "reporting" : "reporting");
+  }
+  function handleLogout(){
+    try { localStorage.removeItem(STORAGE_KEY_AUTH_SESSION); } catch(err) {}
+    setAuth(null);
+  }
+
+  const allTabs = [
     { id:"reporting", label:"Reporting", icon:"📊" },
     { id:"performance", label:"Suivi performance", icon:"📈" },
     { id:"debriefing", label:"Suivi débriefing", icon:"📋" },
@@ -2370,6 +2560,12 @@ function App(){
     { id:"import", label:"Importer", icon:"⬆" },
     { id:"export", label:"Extractions", icon:"🗄" },
   ];
+  const tabs = auth && auth.role === "admin" ? allTabs : allTabs.filter((t) => !ADMIN_ONLY_TABS.has(t.id));
+
+  useEffect(() => {
+    if (!auth) return;
+    if (ADMIN_ONLY_TABS.has(tab) && auth.role !== "admin") setTab("reporting");
+  }, [auth, tab]);
 
   const statusLabel = {
     connecting: "Connexion...",
@@ -2377,6 +2573,8 @@ function App(){
     unconfigured: "Mode local — Firebase non configuré (voir README)",
     error: "Erreur de connexion Firebase — données non partagées",
   }[connStatus];
+
+  if (!auth) return <LoginScreen onLogin={handleLogin} />;
 
   return (
     <div>
@@ -2386,7 +2584,11 @@ function App(){
             <h1>Suivi Qualité — TERSEA Madagascar</h1>
             <p>Débriefings managers · Reporting · Compte Auchan · Site Mada</p>
           </div>
-          <div className="status">💾 {statusLabel}</div>
+          <div className="status" style={{display:"flex", alignItems:"center", gap:10}}>
+            <span>💾 {statusLabel}</span>
+            <span style={{opacity:0.85}}>· {auth.label} ({auth.username})</span>
+            <button className="btn" style={{padding:"3px 10px", fontSize:12}} onClick={handleLogout}>Se déconnecter</button>
+          </div>
         </div>
       </div>
 
@@ -2428,10 +2630,10 @@ function App(){
         {tab === "reporting" && <ReportingView ecarts={ecarts} weekly={weekly} roster={roster} />}
         {tab === "performance" && <PerformanceView ecarts={ecarts} weekly={weekly} roster={roster} allEvaluations={allEvaluations} />}
         {tab === "debriefing" && <DebriefingView ecarts={ecarts} setEcarts={setEcarts} weekly={weekly} onSaveNow={saveNow} roster={roster} />}
-        {tab === "roster" && <RosterView roster={roster} setRoster={setRoster} />}
+        {tab === "roster" && auth.role === "admin" && <RosterView roster={roster} setRoster={setRoster} />}
         {tab === "nps" && <NPSView nccResponses={nccResponses} roster={roster} />}
-        {tab === "import" && <ImportView ecarts={ecarts} setEcarts={setEcarts} onImportJSON={importFromJSON} roster={roster} setRoster={setRoster} nccResponses={nccResponses} setNccResponses={setNccResponses} allEvaluations={allEvaluations} setAllEvaluations={setAllEvaluations} />}
-        {tab === "export" && <ExportView ecarts={ecarts} weekly={weekly} roster={roster} nccResponses={nccResponses} allEvaluations={allEvaluations} />}
+        {tab === "import" && auth.role === "admin" && <ImportView ecarts={ecarts} setEcarts={setEcarts} onImportJSON={importFromJSON} roster={roster} setRoster={setRoster} nccResponses={nccResponses} setNccResponses={setNccResponses} allEvaluations={allEvaluations} setAllEvaluations={setAllEvaluations} />}
+        {tab === "export" && auth.role === "admin" && <ExportView ecarts={ecarts} weekly={weekly} roster={roster} nccResponses={nccResponses} allEvaluations={allEvaluations} />}
       </div>
 
       <div className="footer">

@@ -177,6 +177,8 @@ const STATUTS = ["À traiter", "OK", "KO"];
 const STORAGE_KEY_ECARTS = "tersea_dashboard_ecarts";
 const STORAGE_KEY_WEEKLY = "tersea_dashboard_weekly";
 const STORAGE_KEY_ROSTER = "tersea_dashboard_roster";
+const STORAGE_KEY_NCC_RESPONSES = "tersea_dashboard_ncc_responses";
+const STORAGE_KEY_ALL_EVALUATIONS = "tersea_dashboard_all_evaluations";
 const NOUVEAU_ANCIEN_SEUIL_JOURS = 90; // en dessous de ce seuil (date d'entrée en prod), un conseiller est considéré "Nouveau"
 
 /* ============================================================
@@ -322,7 +324,6 @@ const SEED_ROSTER = [
   { conseiller: "Seth TER_PST32_711", manager: "Ibra", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
   { conseiller: "Tony TER_PST32_734", manager: "Ibra", site: "MADA", statut: "Ancien", dateEntreeProd: "" },
   { conseiller: "DERA TER_PST32_789", manager: "RAS", site: "MADA", statut: "Départ", dateEntreeProd: "" },
-  { conseiller: "DIAMONDRA TER_PST32_737", manager: "Rojo", site: "MADA", statut: "Nouveau", dateEntreeProd: "" },
   { conseiller: "SYLVIA TER_PST32_791", manager: "Rojo", site: "MADA", statut: "Nouveau", dateEntreeProd: "" },
   { conseiller: "MICKAEL TER_PST32_792", manager: "Ibra", site: "MADA", statut: "Nouveau", dateEntreeProd: "" },
   { conseiller: "VOLANA TER_PST32_793", manager: "Rojo", site: "MADA", statut: "Nouveau", dateEntreeProd: "" },
@@ -353,6 +354,21 @@ function extractWeekCode(semaineStr){
 function weekToMonth(semaineStr){
   const code = extractWeekCode(semaineStr);
   return code ? (WEEK_TO_MONTH[code] || null) : null;
+}
+// Numéro de semaine ISO (1-53) pour une date donnée (utilisé pour les données datées au jour près, ex: réponses NCC)
+function getISOWeekLabel(date){
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(),0,1));
+  return Math.ceil((((d - yearStart) / 86400000) + 1)/7);
+}
+function getMonthLabel(dateStr){
+  if (!dateStr) return null;
+  const d = new Date(dateStr);
+  if (isNaN(d)) return null;
+  const noms = ["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre"];
+  return noms[d.getMonth()];
 }
 function computeMonthly(weekly){
   return MONTH_ORDER.map((mois) => {
@@ -404,6 +420,16 @@ function getConseillerManagerFromRoster(conseiller, roster){
   return entry ? entry.manager : null;
 }
 
+// Le manager "effectif" d'un écart : si le champ manager de l'écart est un vrai nom déjà résolu,
+// on le respecte (il a pu être corrigé manuellement) ; sinon (Non trouvé / À confirmer / vide),
+// on retombe sur la répartition d'équipe si elle permet de trancher.
+function getEffectiveManager(e, roster){
+  if (e.manager && e.manager !== "Non trouvé" && e.manager !== "À confirmer") return e.manager;
+  const rosterMgr = getConseillerManagerFromRoster(e.conseiller, roster);
+  if (rosterMgr && rosterMgr !== "RAS") return rosterMgr;
+  return e.manager || "Non trouvé";
+}
+
 function getRosterConseillerList(roster){
   const seen = new Map();
   (roster || []).forEach((r) => {
@@ -415,6 +441,52 @@ function getRosterConseillerList(roster){
 
 function displayConseillerName(rosterConseillerField){
   return String(rosterConseillerField).split(" TER_")[0].split(" PST32")[0].trim();
+}
+
+function normalizeDateStr(d){
+  if (!d) return "";
+  const parsed = new Date(d);
+  if (isNaN(parsed)) return "";
+  return parsed.toISOString().slice(0,10);
+}
+
+function parseNCCRows(rows){
+  const groups = {};
+  rows.forEach((r) => {
+    const key = String(r["N° Demande"] ?? r["N Demande"] ?? r["N° demande"] ?? "").trim();
+    if (!key || key === "nan") return;
+    if (!groups[key]) groups[key] = { ndemande: key, conseillerFull: r["Conseiller"] || "", date: r["Date de L'enquête"] || r["Date de l'enquête"] || "" };
+    const q = String(r["Question"] || "").trim();
+    const rep = r["Réponse"];
+    if (q.startsWith("1.")) groups[key].scoreNCC = rep;
+    else if (q.startsWith("2.")) groups[key].motif = rep;
+    else if (q.startsWith("4.")) groups[key].scoreNPS = rep;
+    else if (q.startsWith("5.")) groups[key].verbatim = rep;
+  });
+  return Object.values(groups)
+    .filter((g) => g.conseillerFull)
+    .map((g) => {
+      const ncc = g.scoreNCC !== undefined && g.scoreNCC !== "" && !isNaN(Number(g.scoreNCC)) ? Number(g.scoreNCC) : null;
+      const nps = g.scoreNPS !== undefined && g.scoreNPS !== "" && !isNaN(Number(g.scoreNPS)) ? Number(g.scoreNPS) : null;
+      return {
+        ndemande: g.ndemande,
+        conseillerFull: g.conseillerFull,
+        conseiller: displayConseillerName(g.conseillerFull),
+        date: normalizeDateStr(g.date),
+        scoreNCC: ncc,
+        scoreNPS: nps,
+        motif: g.motif || "",
+        verbatim: g.verbatim || "",
+      };
+    });
+}
+
+function computeAggregateNPS(rows){
+  const withScore = rows.filter((r) => r.scoreNPS !== null);
+  if (!withScore.length) return null;
+  const promoters = withScore.filter((r) => r.scoreNPS >= 9).length;
+  const detracteurs = withScore.filter((r) => r.scoreNPS <= 6).length;
+  return Math.round(((promoters - detracteurs) / withScore.length) * 1000) / 10;
 }
 
 function computeConseillerBreakdown(ecarts, roster, visibleIndicators){
@@ -508,9 +580,9 @@ function computeIndicatorStats(ecarts){
     return { indicateur: ind, total: rows.length, done, taux: rows.length ? Math.round((done/rows.length)*1000)/10 : 0 };
   });
 }
-function computeManagerStats(ecarts){
+function computeManagerStats(ecarts, roster){
   return MANAGERS.map((m) => {
-    const rows = ecarts.filter((e) => e.manager === m);
+    const rows = ecarts.filter((e) => getEffectiveManager(e, roster) === m);
     const done = rows.filter((r) => r.statut === "OK" || r.statut === "KO").length;
     return { manager: m, total: rows.length, done, taux: rows.length ? Math.round((done/rows.length)*1000)/10 : 0 };
   }).filter((m) => m.total > 0);
@@ -527,7 +599,7 @@ function exportCSV(rows, filename){
   const csv = Papa.unparse(rows);
   downloadBlob(csv, filename, "text/csv;charset=utf-8;");
 }
-function exportExcel(ecarts, weekly){
+function exportExcel(ecarts, weekly, roster){
   const wb = XLSX.utils.book_new();
   const mainRows = ecarts.map((e,i) => ({
     "N°": i+1, Indicateur: e.indicateur, Conseiller: e.conseiller, "Référence": e.reference,
@@ -541,7 +613,7 @@ function exportExcel(ecarts, weekly){
   XLSX.utils.book_append_sheet(wb, ws1, "Suivi Débriefing");
 
   const indStats = computeIndicatorStats(ecarts);
-  const mgrStats = computeManagerStats(ecarts);
+  const mgrStats = computeManagerStats(ecarts, roster);
   const totalDone = ecarts.filter((e) => e.statut === "OK" || e.statut === "KO").length;
   const reportRows = [
     { Section: "Par indicateur" },
@@ -558,11 +630,12 @@ function exportExcel(ecarts, weekly){
   XLSX.utils.book_append_sheet(wb, ws3, "Historique KPI");
   XLSX.writeFile(wb, "Suivi_Debriefing_Manager.xlsx");
 }
-function exportForClaude(ecarts, weekly, roster){
+function exportForClaude(ecarts, weekly, roster, nccResponses, allEvaluations){
   const payload = {
     genere_le: new Date().toISOString(),
     note: "Coller ce JSON dans une conversation Claude avec la consigne 'mets à jour le PowerPoint et l'Excel qualité avec ces données' pour régénérer les supports.",
     ecarts, historique_kpi: weekly, repartition_equipes: roster || [],
+    ncc_responses: nccResponses || [], toutes_evaluations: allEvaluations || [],
   };
   downloadBlob(JSON.stringify(payload, null, 2), "export_pour_claude.json", "application/json");
 }
@@ -822,7 +895,7 @@ function ReportingView({ ecarts, weekly, roster }) {
   }, [ecarts, granularity, periodValue, managerFilter, ancienneteFilter, roster]);
 
   const indStats = computeIndicatorStats(filteredForOverview);
-  const mgrStats = computeManagerStats(filteredForOverview);
+  const mgrStats = computeManagerStats(filteredForOverview, roster);
   const total = filteredForOverview.length;
   const totalDone = filteredForOverview.filter((e) => e.statut === "OK" || e.statut === "KO").length;
   const tauxGlobal = total ? Math.round((totalDone/total)*1000)/10 : 0;
@@ -893,24 +966,6 @@ function ReportingView({ ecarts, weekly, roster }) {
         <SectionTitle icon="👥">Taux de déploiement des débriefings, par manager</SectionTitle>
         <div className="card"><BarChartH data={mgrStats} labelKey="manager" valueKey="taux" /></div>
       </div>
-
-      <div>
-        <SectionTitle icon="📈">Performance des indicateurs, semaine par semaine</SectionTitle>
-        <div className="filters" style={{marginBottom:14}}>
-          <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600}}>Indicateurs affichés :</span>
-          {INDICATEURS.map((k, i) => (
-            <button
-              key={k}
-              className="btn"
-              style={visibleIndicators.has(k) ? { background:SERIES_COLORS[i], color:"#fff", borderColor:SERIES_COLORS[i] } : { color:"var(--textMuted)" }}
-              onClick={() => toggleIndicator(k)}
-            >
-              {k}
-            </button>
-          ))}
-        </div>
-        <div className="card"><LineChartMulti data={weekly} series={series} xKey="semaine" /></div>
-      </div>
     </div>
   );
 }
@@ -927,49 +982,74 @@ function parseScoreFromEcart(e){
   return null; // Process Auchan/Interne, Transfert : pas de note numérique par ligne, seulement OK/KO/SI
 }
 
-function computeConseillerScoreBreakdown(ecarts, roster, kpi){
+function computeConseillerScoreBreakdown(ecarts, roster, kpi, allEvaluations, periodFilterFn){
   const list = getRosterConseillerList(roster).filter((r) => r.manager !== "RAS");
+  const evalsForKpi = (allEvaluations || []).filter((ev) => ev.indicateur === kpi && (!periodFilterFn || periodFilterFn(ev)));
+  const hasRawData = evalsForKpi.length > 0;
+  const isNumericKpi = kpi === "Hubicus Voix" || kpi === "Hubicus Mail" || kpi.includes("NCC");
+
   return list.map((r) => {
-    const matching = ecarts.filter((e) =>
+    const matchingEcarts = ecarts.filter((e) =>
       normalizeName(e.conseiller) === normalizeName(r.conseiller) && e.indicateur === kpi
     );
-    const done = matching.filter((e) => e.statut === "OK" || e.statut === "KO").length;
-    const scores = matching.map(parseScoreFromEcart).filter(Boolean);
-    const avgScore = scores.length ? scores.reduce((a, b) => a + b.value, 0) / scores.length : null;
-    const unit = scores.length ? scores[0].unit : (kpi.includes("NCC") ? "/10" : "%");
+    const done = matchingEcarts.filter((e) => e.statut === "OK" || e.statut === "KO").length;
+
+    let avgScore = null, unit = kpi.includes("NCC") ? "/10" : "%", nbEval = 0;
+    if (hasRawData) {
+      const mine = evalsForKpi.filter((ev) => normalizeName(ev.conseiller) === normalizeName(r.conseiller));
+      nbEval = mine.length;
+      if (mine.length) {
+        if (isNumericKpi) {
+          const withScore = mine.filter((ev) => ev.score !== null && ev.score !== undefined && ev.score !== "");
+          avgScore = withScore.length ? Math.round((withScore.reduce((a,b) => a+Number(b.score), 0)/withScore.length)*10)/10 : null;
+        } else {
+          const withStatut = mine.filter((ev) => ["OK","KO","SI"].includes(ev.statut));
+          const ok = withStatut.filter((ev) => ev.statut === "OK").length;
+          avgScore = withStatut.length ? Math.round((ok/withStatut.length)*1000)/10 : null;
+        }
+      }
+    } else {
+      const scores = matchingEcarts.map(parseScoreFromEcart).filter(Boolean);
+      avgScore = scores.length ? Math.round((scores.reduce((a, b) => a + b.value, 0) / scores.length)*10)/10 : null;
+      if (scores.length) unit = scores[0].unit;
+    }
+
     return {
       conseiller: displayConseillerName(r.conseiller),
       manager: r.manager,
       statutEquipe: r.statut,
-      total: matching.length,
+      total: matchingEcarts.length,
       done,
-      avgScore, unit,
-      hasNumericScore: scores.length > 0,
+      avgScore, unit, nbEval,
+      hasRawData,
     };
   });
 }
 
-function computeTeamScoreBreakdown(conseillerScoreBreakdown){
+function computeTeamScoreBreakdown(conseillerScoreBreakdown, isNumericKpi){
   const map = {};
   conseillerScoreBreakdown.forEach((c) => {
     const key = c.manager || "Non trouvé";
-    if (!map[key]) map[key] = { manager: key, total: 0, done: 0, nbConseillers: 0, nbEnEcart: 0, scores: [], unit: c.unit };
+    if (!map[key]) map[key] = { manager: key, total: 0, done: 0, nbConseillers: 0, nbEnEcart: 0, scores: [], nbEvalTotal: 0, okTotal: 0, unit: c.unit };
     map[key].total += c.total;
     map[key].done += c.done;
     map[key].nbConseillers += 1;
     if (c.total > 0) map[key].nbEnEcart += 1;
-    if (c.avgScore !== null) map[key].scores.push(c.avgScore);
+    if (c.avgScore !== null) {
+      map[key].scores.push(c.avgScore);
+      map[key].nbEvalTotal += c.nbEval || 1;
+    }
   });
   return Object.values(map).map((t) => ({
     ...t,
-    avgScore: t.scores.length ? t.scores.reduce((a,b) => a+b, 0)/t.scores.length : null,
+    avgScore: t.scores.length ? Math.round((t.scores.reduce((a,b) => a+b, 0)/t.scores.length)*10)/10 : null,
   })).sort((a, b) => b.total - a.total);
 }
 
 /* ============================================================
    VUE : SUIVI DE LA PERFORMANCE
    ============================================================ */
-function PerformanceView({ ecarts, weekly, roster }) {
+function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
   const [granularity, setGranularity] = useState("semaine");
   const [visibleIndicators, setVisibleIndicators] = useState(() => new Set(INDICATEURS));
   const [fManager, setFManager] = useState("Tous");
@@ -1009,16 +1089,19 @@ function PerformanceView({ ecarts, weekly, roster }) {
 
   const weekOptionsB = useMemo(() => {
     const set = new Set(ecarts.map((e) => extractWeekCode(e.semaine)).filter(Boolean));
+    (allEvaluations||[]).forEach((e) => { const c = extractWeekCode(e.semaine); if (c) set.add(c); });
     return [...set].sort();
-  }, [ecarts]);
+  }, [ecarts, allEvaluations]);
   const monthOptionsB = useMemo(() => {
     const set = new Set(ecarts.map((e) => weekToMonth(e.semaine)).filter(Boolean));
+    (allEvaluations||[]).forEach((e) => { const m = weekToMonth(e.semaine); if (m) set.add(m); });
     return MONTH_ORDER.filter((m) => set.has(m));
-  }, [ecarts]);
+  }, [ecarts, allEvaluations]);
   const dayOptionsB = useMemo(() => {
     const set = new Set(ecarts.map((e) => e.date).filter(Boolean));
+    (allEvaluations||[]).forEach((e) => { if (e.date) set.add(e.date); });
     return [...set].sort();
-  }, [ecarts]);
+  }, [ecarts, allEvaluations]);
 
   const ecartsForBreakdown = useMemo(() => {
     return ecarts.filter((e) => {
@@ -1031,23 +1114,40 @@ function PerformanceView({ ecarts, weekly, roster }) {
     });
   }, [ecarts, granBreakdown, periodBreakdown]);
 
+  const evalPeriodFilterFn = useMemo(() => {
+    if (granBreakdown === "tous" || periodBreakdown === "Toutes") return null;
+    return (ev) => {
+      if (granBreakdown === "semaine") return extractWeekCode(ev.semaine) === periodBreakdown;
+      if (granBreakdown === "mois") return weekToMonth(ev.semaine) === periodBreakdown;
+      if (granBreakdown === "jour") return ev.date === periodBreakdown;
+      return true;
+    };
+  }, [granBreakdown, periodBreakdown]);
+
   const conseillerBreakdownAll = useMemo(
-    () => computeConseillerScoreBreakdown(ecartsForBreakdown, roster, kpiFilter),
-    [ecartsForBreakdown, roster, kpiFilter]
+    () => computeConseillerScoreBreakdown(ecartsForBreakdown, roster, kpiFilter, allEvaluations, evalPeriodFilterFn),
+    [ecartsForBreakdown, roster, kpiFilter, allEvaluations, evalPeriodFilterFn]
   );
+  const objectifKpi = `${OBJECTIFS[kpiFilter]}${kpiFilter.includes("NCC") ? "/10" : "%"}`;
+  const kpiHasNumericScore = kpiFilter === "Hubicus Voix" || kpiFilter === "Hubicus Mail" || kpiFilter.includes("NCC");
+
+  function isEnEcart(c){
+    if (c.hasRawData) return c.avgScore !== null && c.avgScore < OBJECTIFS[kpiFilter];
+    return c.total > 0;
+  }
+
   const conseillerBreakdown = useMemo(() => conseillerBreakdownAll.filter((c) => {
     if (fManager !== "Tous" && c.manager !== fManager) return false;
     if (fConseiller !== "Tous" && c.conseiller !== fConseiller) return false;
-    if (onlyEnEcart && c.total === 0) return false;
+    if (onlyEnEcart && !isEnEcart(c)) return false;
     return true;
-  }).sort((a, b) => b.total - a.total), [conseillerBreakdownAll, fManager, fConseiller, onlyEnEcart]);
+  }).sort((a, b) => (a.avgScore ?? 999) - (b.avgScore ?? 999)), [conseillerBreakdownAll, fManager, fConseiller, onlyEnEcart, kpiFilter]);
   const teamBreakdown = useMemo(() => computeTeamScoreBreakdown(conseillerBreakdownAll.filter((c) => {
     if (fManager !== "Tous" && c.manager !== fManager) return false;
     return true;
   })), [conseillerBreakdownAll, fManager]);
 
-  const objectifKpi = `${OBJECTIFS[kpiFilter]}${kpiFilter.includes("NCC") ? "/10" : "%"}`;
-  const kpiHasNumericScore = kpiFilter === "Hubicus Voix" || kpiFilter === "Hubicus Mail" || kpiFilter.includes("NCC");
+  const hasRawDataForKpi = conseillerBreakdownAll.some((c) => c.hasRawData);
 
   function toggleIndicator(key){
     setVisibleIndicators((prev) => {
@@ -1185,12 +1285,12 @@ function PerformanceView({ ecarts, weekly, roster }) {
             <div>Aucune répartition d'équipe chargée — importe-la dans l'onglet Importer pour voir les résultats par conseiller et par équipe.</div>
           </div>
         ) : (
-          <div className="notice info" style={{marginBottom:14}}>
-            <span className="ic">ℹ</span>
+          <div className={"notice " + (hasRawDataForKpi ? "info" : "warn")} style={{marginBottom:14}}>
+            <span className="ic">{hasRawDataForKpi ? "ℹ" : "⚠"}</span>
             <div>Objectif {kpiFilter} : <strong>{objectifKpi}</strong>.{" "}
-            {kpiHasNumericScore
-              ? "Le score affiché est la note moyenne des évaluations en écart de ce conseiller (pas sa moyenne générale) — un conseiller sans écart n'a pas de score calculable, il n'apparaît qu'avec « — »."
-              : "Cet indicateur ne fournit pas de note chiffrée par évaluation (seulement Conforme/Non conforme) : le nombre d'écarts est affiché faute de taux individuel calculable."}
+            {hasRawDataForKpi
+              ? "Score calculé sur l'ensemble des évaluations importées pour cet indicateur (pas seulement celles en écart)."
+              : "Aucune évaluation complète importée pour cet indicateur — le score affiché ci-dessous n'est que la moyenne des écarts déjà enregistrés (toujours sous l'objectif par construction). Importe le fichier d'évaluations complet (onglet Importer) pour un score exact par conseiller."}
             </div>
           </div>
         )}
@@ -1203,25 +1303,24 @@ function PerformanceView({ ecarts, weekly, roster }) {
             <div style={{overflowX:"auto", maxHeight:420, overflowY:"auto"}}>
               <table>
                 <thead>
-                  <tr>{["Conseiller","Manager","Équipe","Score","Objectif","Débriefés"].map((h) => <th key={h}>{h}</th>)}</tr>
+                  <tr>{["Conseiller","Manager","Équipe","Score","Objectif","Nb éval.","Écarts débriefés"].map((h) => <th key={h}>{h}</th>)}</tr>
                 </thead>
                 <tbody>
                   {conseillerBreakdown.map((c, i) => (
-                    <tr key={c.conseiller+i} style={{backgroundColor: c.total>0 ? "var(--redSoft)" : (i%2 ? "var(--grey)" : "#fff")}}>
+                    <tr key={c.conseiller+i} style={{backgroundColor: isEnEcart(c) ? "var(--redSoft)" : (i%2 ? "var(--grey)" : "#fff")}}>
                       <td>{c.conseiller}</td>
                       <td>{c.manager}</td>
                       <td style={{fontSize:12, color:"var(--textMuted)"}}>{c.statutEquipe || "—"}</td>
-                      <td style={{fontWeight:600, color: c.total>0 ? "var(--red)" : "var(--green)"}}>
-                        {kpiHasNumericScore
-                          ? (c.avgScore !== null ? `${c.avgScore.toFixed(1)}${c.unit}` : "—")
-                          : (c.total > 0 ? `${c.total} écart(s)` : "0 écart")}
+                      <td style={{fontWeight:600, color: isEnEcart(c) ? "var(--red)" : "var(--green)"}}>
+                        {c.avgScore !== null ? `${c.avgScore}${c.unit}` : (c.hasRawData ? "—" : (c.total > 0 ? `${c.total} écart(s)` : "0 écart"))}
                       </td>
                       <td style={{fontSize:12, color:"var(--textMuted)"}}>{objectifKpi}</td>
+                      <td style={{fontSize:12, color:"var(--textMuted)"}}>{c.hasRawData ? c.nbEval : "—"}</td>
                       <td>{c.total>0 ? `${c.done}/${c.total}` : "—"}</td>
                     </tr>
                   ))}
                   {conseillerBreakdown.length === 0 && (
-                    <tr><td colSpan="6" style={{textAlign:"center", padding:20, color:"var(--textMuted)"}}>Aucun conseiller ne correspond à ces filtres.</td></tr>
+                    <tr><td colSpan="7" style={{textAlign:"center", padding:20, color:"var(--textMuted)"}}>Aucun conseiller ne correspond à ces filtres.</td></tr>
                   )}
                 </tbody>
               </table>
@@ -1241,10 +1340,8 @@ function PerformanceView({ ecarts, weekly, roster }) {
                   <tr key={t.manager} style={{backgroundColor: i%2 ? "var(--grey)" : "#fff"}}>
                     <td style={{fontWeight:500}}>{t.manager}</td>
                     <td>{t.nbEnEcart}/{t.nbConseillers}</td>
-                    <td style={{fontWeight:600, color: t.total>0 ? "var(--red)" : "var(--green)"}}>
-                      {kpiHasNumericScore
-                        ? (t.avgScore !== null ? `${t.avgScore.toFixed(1)}${t.unit}` : "—")
-                        : (t.total > 0 ? `${t.total} écart(s)` : "0 écart")}
+                    <td style={{fontWeight:600, color: (t.avgScore !== null ? t.avgScore < OBJECTIFS[kpiFilter] : t.total>0) ? "var(--red)" : "var(--green)"}}>
+                      {t.avgScore !== null ? `${t.avgScore}${t.unit}` : (t.total > 0 ? `${t.total} écart(s)` : "0 écart")}
                     </td>
                     <td style={{fontSize:12, color:"var(--textMuted)"}}>{objectifKpi}</td>
                   </tr>
@@ -1264,17 +1361,18 @@ function PerformanceView({ ecarts, weekly, roster }) {
 /* ============================================================
    VUE : SUIVI DÉBRIEFING
    ============================================================ */
-function EcartDetailPanel({ e, onSave, onDelete }) {
-  const [draft, setDraft] = useState({ statut: e.statut, action: e.action, dateDebrief: e.dateDebrief, manager: e.manager });
+function EcartDetailPanel({ e, onSave, onDelete, roster }) {
+  const effectiveMgr = getEffectiveManager(e, roster);
+  const [draft, setDraft] = useState({ statut: e.statut, action: e.action, dateDebrief: e.dateDebrief, manager: effectiveMgr });
   const [saving, setSaving] = useState(false);
   const [saveResult, setSaveResult] = useState(null); // null | {ok:true} | {ok:false, reason}
 
   useEffect(() => {
-    setDraft({ statut: e.statut, action: e.action, dateDebrief: e.dateDebrief, manager: e.manager });
+    setDraft({ statut: e.statut, action: e.action, dateDebrief: e.dateDebrief, manager: getEffectiveManager(e, roster) });
     setSaveResult(null);
   }, [e.id]);
 
-  const dirty = draft.statut !== e.statut || draft.action !== e.action || draft.dateDebrief !== e.dateDebrief || draft.manager !== e.manager;
+  const dirty = draft.statut !== e.statut || draft.action !== e.action || draft.dateDebrief !== e.dateDebrief || draft.manager !== effectiveMgr;
 
   async function handleSave(){
     setSaving(true);
@@ -1326,7 +1424,7 @@ function EcartDetailPanel({ e, onSave, onDelete }) {
   );
 }
 
-function DebriefingView({ ecarts, setEcarts, weekly, onSaveNow }) {
+function DebriefingView({ ecarts, setEcarts, weekly, onSaveNow, roster }) {
   const [search, setSearch] = useState("");
   const [fInd, setFInd] = useState("Tous");
   const [fMgr, setFMgr] = useState("Tous");
@@ -1348,10 +1446,14 @@ function DebriefingView({ ecarts, setEcarts, weekly, onSaveNow }) {
     const set = new Set(ecarts.map((e) => e.date).filter(Boolean));
     return [...set].sort();
   }, [ecarts]);
+  const managerOptionsDebrief = useMemo(() => {
+    const set = new Set(ecarts.map((e) => getEffectiveManager(e, roster)));
+    return MANAGERS.filter((m) => set.has(m));
+  }, [ecarts, roster]);
 
   const filtered = useMemo(() => ecarts.filter((e) => {
     if (fInd !== "Tous" && e.indicateur !== fInd) return false;
-    if (fMgr !== "Tous" && e.manager !== fMgr) return false;
+    if (fMgr !== "Tous" && getEffectiveManager(e, roster) !== fMgr) return false;
     if (fStat !== "Tous" && e.statut !== fStat) return false;
     if (granularity !== "tous" && periodValue !== "Toutes") {
       if (granularity === "semaine" && extractWeekCode(e.semaine) !== periodValue) return false;
@@ -1363,7 +1465,7 @@ function DebriefingView({ ecarts, setEcarts, weekly, onSaveNow }) {
       if (!hay.includes(search.toLowerCase())) return false;
     }
     return true;
-  }), [ecarts, search, fInd, fMgr, fStat, granularity, periodValue]);
+  }), [ecarts, search, fInd, fMgr, fStat, granularity, periodValue, roster]);
 
   async function saveRow(id, patch){
     const updated = ecarts.map((x) => x.id === id ? {...x, ...patch} : x);
@@ -1397,7 +1499,7 @@ function DebriefingView({ ecarts, setEcarts, weekly, onSaveNow }) {
           <option>Tous</option>{INDICATEURS.map((i) => <option key={i}>{i}</option>)}
         </select>
         <select value={fMgr} onChange={(e) => setFMgr(e.target.value)}>
-          <option>Tous</option>{MANAGERS.map((m) => <option key={m}>{m}</option>)}
+          <option>Tous</option>{managerOptionsDebrief.map((m) => <option key={m}>{m}</option>)}
         </select>
         <select value={fStat} onChange={(e) => setFStat(e.target.value)}>
           <option>Tous</option>{STATUTS.map((s) => <option key={s}>{s}</option>)}
@@ -1422,13 +1524,13 @@ function DebriefingView({ ecarts, setEcarts, weekly, onSaveNow }) {
                     <td style={{whiteSpace:"nowrap"}}>{e.semaine}</td>
                     <td><span className="truncate">{e.ecart}</span></td>
                     <td><Badge statut={e.statut} /></td>
-                    <td style={{whiteSpace:"nowrap"}}>{e.manager}</td>
+                    <td style={{whiteSpace:"nowrap"}}>{getEffectiveManager(e, roster)}</td>
                     <td>{expanded===e.id ? "▴" : "▾"}</td>
                   </tr>
                   {expanded === e.id && (
                     <tr>
                       <td colSpan="7" style={{padding:0}}>
-                        <EcartDetailPanel e={e} onSave={(patch) => saveRow(e.id, patch)} onDelete={() => deleteRow(e.id)} />
+                        <EcartDetailPanel e={e} onSave={(patch) => saveRow(e.id, patch)} onDelete={() => deleteRow(e.id)} roster={roster} />
                       </td>
                     </tr>
                   )}
@@ -1486,11 +1588,386 @@ function AddEcartModal({ onClose, onAdd }) {
 /* ============================================================
    VUE : IMPORT
    ============================================================ */
-function ImportView({ ecarts, setEcarts, onImportJSON, roster, setRoster }) {
+/* ============================================================
+   VUE : RÉPARTITION D'ÉQUIPE
+   ============================================================ */
+function RosterAddEditModal({ initial, onClose, onSave }) {
+  const [form, setForm] = useState(initial || { conseiller: "", manager: MANAGERS.filter((m)=>m!=="À confirmer"&&m!=="Non trouvé")[0] || "Ibra", statut: "Ancien", dateEntreeProd: "" });
+  const isEdit = !!initial;
+  return (
+    <div className="modal-overlay">
+      <div className="modal">
+        <div className="modal-close-row">
+          <h3>{isEdit ? "Modifier l'affectation" : "Ajouter un conseiller"}</h3>
+          <button onClick={onClose} style={{border:"none", background:"none", cursor:"pointer", fontSize:18}}>×</button>
+        </div>
+        <div className="field-stack">
+          <input type="text" placeholder="Conseiller (ex: Rosa TER_PST32_669)" value={form.conseiller}
+            disabled={isEdit} style={isEdit ? {opacity:0.6} : {}}
+            onChange={(e) => setForm({...form, conseiller: e.target.value})} />
+          <select value={form.manager} onChange={(e) => setForm({...form, manager: e.target.value})}>
+            {["Christopha","Ibra","Rojo"].map((m) => <option key={m}>{m}</option>)}
+          </select>
+          <select value={form.statut} onChange={(e) => setForm({...form, statut: e.target.value})}>
+            <option>Ancien</option><option>Nouveau</option><option>Départ</option>
+          </select>
+        </div>
+        <div style={{display:"flex", justifyContent:"flex-end", gap:8, marginTop:10}}>
+          <button className="btn" onClick={onClose}>Annuler</button>
+          <button className="btn primary" disabled={!form.conseiller} onClick={() => onSave(form)}>
+            {isEdit ? "Enregistrer" : "Ajouter"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RosterView({ roster, setRoster }) {
+  const [search, setSearch] = useState("");
+  const [fManager, setFManager] = useState("Tous");
+  const [fStatut, setFStatut] = useState("Tous");
+  const [modalMode, setModalMode] = useState(null); // null | "add" | conseiller-key of row being edited
+  const [confirmDelete, setConfirmDelete] = useState(null);
+
+  const filtered = useMemo(() => (roster || []).filter((r) => {
+    if (fManager !== "Tous" && r.manager !== fManager) return false;
+    if (fStatut !== "Tous" && r.statut !== fStatut) return false;
+    if (search && !r.conseiller.toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  }).sort((a,b) => displayConseillerName(a.conseiller).localeCompare(displayConseillerName(b.conseiller))), [roster, fManager, fStatut, search]);
+
+  function addEntry(form){
+    setRoster([...(roster||[]), { conseiller: form.conseiller.trim(), manager: form.manager, site: "MADA", statut: form.statut, dateEntreeProd: "" }]);
+    setModalMode(null);
+  }
+  function updateEntry(originalConseiller, form){
+    setRoster((roster||[]).map((r) => r.conseiller === originalConseiller ? { ...r, manager: form.manager, statut: form.statut } : r));
+    setModalMode(null);
+  }
+  function deleteEntry(conseiller){
+    setRoster((roster||[]).filter((r) => r.conseiller !== conseiller));
+    setConfirmDelete(null);
+  }
+
+  const editingEntry = (typeof modalMode === "string" && modalMode !== "add")
+    ? (roster || []).find((r) => r.conseiller === modalMode)
+    : null;
+
+  return (
+    <div>
+      <SectionTitle icon="🧑‍🤝‍🧑">Répartition d'équipe</SectionTitle>
+
+      <div className="notice info" style={{marginBottom:16}}>
+        <span className="ic">ℹ</span>
+        <div>Cette répartition sert à retrouver automatiquement le manager d'un conseiller (Suivi débriefing, Reporting)
+        et à distinguer Nouveau/Ancien/Départ. Les modifications ici sont partagées en ligne comme le reste du tableau de bord.</div>
+      </div>
+
+      <div className="filters" style={{marginBottom:14}}>
+        <div className="search-box">
+          🔍
+          <input placeholder="Rechercher un conseiller..." value={search} onChange={(e) => setSearch(e.target.value)} />
+        </div>
+        <select value={fManager} onChange={(e) => setFManager(e.target.value)}>
+          <option>Tous</option>{["Christopha","Ibra","Rojo"].map((m) => <option key={m}>{m}</option>)}
+        </select>
+        <select value={fStatut} onChange={(e) => setFStatut(e.target.value)}>
+          <option>Tous</option><option>Ancien</option><option>Nouveau</option><option>Départ</option>
+        </select>
+        <button className="btn primary" onClick={() => setModalMode("add")}>+ Ajouter un conseiller</button>
+      </div>
+
+      <div style={{fontSize:12, color:"var(--textMuted)", marginBottom:8}}>{filtered.length} conseiller(s) affiché(s) sur {(roster||[]).length}</div>
+
+      <div className="card" style={{padding:0, overflow:"hidden"}}>
+        <table>
+          <thead><tr>{["Conseiller","Manager","Statut",""].map((h) => <th key={h}>{h}</th>)}</tr></thead>
+          <tbody>
+            {filtered.map((r, i) => (
+              <tr key={r.conseiller+"-"+i} style={{backgroundColor: i%2 ? "var(--grey)" : "#fff"}}>
+                <td>{displayConseillerName(r.conseiller)}</td>
+                <td>{r.manager}</td>
+                <td>
+                  <span className={"badge " + (r.statut==="Départ" ? "KO" : r.statut==="Nouveau" ? "atraiter" : "OK")}>{r.statut || "—"}</span>
+                </td>
+                <td style={{whiteSpace:"nowrap"}}>
+                  <button className="btn" style={{padding:"4px 10px", fontSize:12, marginRight:6}} onClick={() => setModalMode(r.conseiller)}>Modifier</button>
+                  <button className="btn" style={{padding:"4px 10px", fontSize:12, color:"var(--red)", background:"var(--redSoft)"}} onClick={() => setConfirmDelete(r.conseiller)}>Supprimer</button>
+                </td>
+              </tr>
+            ))}
+            {filtered.length === 0 && <tr><td colSpan="4" style={{textAlign:"center", padding:20, color:"var(--textMuted)"}}>Aucun conseiller ne correspond à ces filtres.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      {modalMode === "add" && (
+        <RosterAddEditModal onClose={() => setModalMode(null)} onSave={addEntry} />
+      )}
+      {editingEntry && (
+        <RosterAddEditModal
+          initial={{ conseiller: editingEntry.conseiller, manager: editingEntry.manager === "RAS" ? "Ibra" : editingEntry.manager, statut: editingEntry.statut }}
+          onClose={() => setModalMode(null)}
+          onSave={(form) => updateEntry(editingEntry.conseiller, form)}
+        />
+      )}
+      {confirmDelete && (
+        <div className="modal-overlay">
+          <div className="modal" style={{maxWidth:380}}>
+            <h3>Supprimer ce conseiller ?</h3>
+            <p style={{fontSize:13, color:"var(--textMuted)"}}>
+              « {displayConseillerName(confirmDelete)} » sera retiré de la répartition d'équipe. Les écarts déjà
+              enregistrés pour ce conseiller resteront, mais son manager ne sera plus retrouvé automatiquement.
+            </p>
+            <div style={{display:"flex", justifyContent:"flex-end", gap:8, marginTop:10}}>
+              <button className="btn" onClick={() => setConfirmDelete(null)}>Annuler</button>
+              <button className="btn" style={{color:"var(--red)", background:"var(--redSoft)"}} onClick={() => deleteEntry(confirmDelete)}>Supprimer</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   VUE : ANALYSE NPS
+   ============================================================ */
+function NPSView({ nccResponses, roster }) {
+  const [granularity, setGranularity] = useState("tous");
+  const [periodValue, setPeriodValue] = useState("Toutes");
+  const [fManager, setFManager] = useState("Tous");
+  const [fAgent, setFAgent] = useState("Tous");
+  const [onlyToAnalyze, setOnlyToAnalyze] = useState(false);
+  const [expanded, setExpanded] = useState(null);
+
+  const responses = nccResponses || [];
+
+  const withManager = useMemo(() => responses.map((r) => ({
+    ...r,
+    manager: getConseillerManagerFromRoster(r.conseillerFull, roster) || "Non trouvé",
+  })), [responses, roster]);
+
+  const weekOptions = useMemo(() => {
+    const set = new Set();
+    withManager.forEach((r) => {
+      if (r.date) {
+        const d = new Date(r.date);
+        if (!isNaN(d)) set.add("S" + getISOWeekLabel(d));
+      }
+    });
+    return [...set].filter(Boolean).sort();
+  }, [withManager]);
+  const monthOptions = useMemo(() => {
+    const set = new Set();
+    withManager.forEach((r) => { if (r.date) set.add(getMonthLabel(r.date)); });
+    return [...set].filter(Boolean);
+  }, [withManager]);
+  const dayOptions = useMemo(() => {
+    const set = new Set(withManager.map((r) => r.date).filter(Boolean));
+    return [...set].sort();
+  }, [withManager]);
+  const managerOptions = useMemo(() => {
+    const set = new Set(withManager.map((r) => r.manager).filter(Boolean));
+    return [...set].sort();
+  }, [withManager]);
+  const agentOptions = useMemo(() => {
+    const set = new Set(withManager.filter((r) => fManager === "Tous" || r.manager === fManager).map((r) => r.conseiller));
+    return [...set].sort();
+  }, [withManager, fManager]);
+
+  const filtered = useMemo(() => withManager.filter((r) => {
+    if (fManager !== "Tous" && r.manager !== fManager) return false;
+    if (fAgent !== "Tous" && r.conseiller !== fAgent) return false;
+    if (granularity !== "tous" && periodValue !== "Toutes" && r.date) {
+      if (granularity === "jour" && r.date !== periodValue) return false;
+      if (granularity === "semaine" && "S"+getISOWeekLabel(new Date(r.date)) !== periodValue) return false;
+      if (granularity === "mois" && getMonthLabel(r.date) !== periodValue) return false;
+    } else if (granularity !== "tous" && periodValue !== "Toutes" && !r.date) {
+      return false;
+    }
+    if (onlyToAnalyze) {
+      const ncc = r.scoreNCC !== null && r.scoreNCC <= 7;
+      const nps = r.scoreNPS !== null && r.scoreNPS <= 7;
+      if (!ncc && !nps) return false;
+    }
+    return true;
+  }), [withManager, fManager, fAgent, granularity, periodValue, onlyToAnalyze]);
+
+  const avgNCC = useMemo(() => {
+    const withScore = filtered.filter((r) => r.scoreNCC !== null);
+    return withScore.length ? Math.round((withScore.reduce((a,b) => a+b.scoreNCC, 0)/withScore.length)*10)/10 : null;
+  }, [filtered]);
+  const nps = useMemo(() => computeAggregateNPS(filtered), [filtered]);
+  const toAnalyzeCount = useMemo(() => withManager.filter((r) => (r.scoreNCC !== null && r.scoreNCC <= 7) || (r.scoreNPS !== null && r.scoreNPS <= 7)).length, [withManager]);
+
+  return (
+    <div>
+      <SectionTitle icon="⭐">Analyse NPS</SectionTitle>
+
+      {responses.length === 0 ? (
+        <div className="notice warn" style={{marginBottom:16}}>
+          <span className="ic">⚠</span>
+          <div>Aucune réponse NCC chargée — importe le fichier d'enquête satisfaction dans l'onglet Importer (section « Importer les réponses NCC ») pour alimenter cette vue.</div>
+        </div>
+      ) : (
+        <div className="notice info" style={{marginBottom:16}}>
+          <span className="ic">ℹ</span>
+          <div>Le NPS agrégé = % promoteurs (note 9-10) − % détracteurs (note 0-6) sur la question 4. Le canal
+          (téléphone/mail) n'est pas fourni par le fichier d'enquête source — non affiché pour l'instant.</div>
+        </div>
+      )}
+
+      <PeriodFilter
+        granularity={granularity} setGranularity={setGranularity}
+        value={periodValue} setValue={setPeriodValue}
+        weekOptions={weekOptions} monthOptions={monthOptions} dayOptions={dayOptions}
+      />
+
+      <div className="filters" style={{marginBottom:14, marginTop:-8}}>
+        <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600}}>Manager :</span>
+        <select value={fManager} onChange={(e) => { setFManager(e.target.value); setFAgent("Tous"); }}>
+          <option>Tous</option>{managerOptions.map((m) => <option key={m}>{m}</option>)}
+        </select>
+        <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600, marginLeft:8}}>Agent :</span>
+        <select value={fAgent} onChange={(e) => setFAgent(e.target.value)}>
+          <option>Tous</option>{agentOptions.map((a) => <option key={a}>{a}</option>)}
+        </select>
+        <label style={{display:"flex", alignItems:"center", gap:6, fontSize:13, marginLeft:8, cursor:"pointer"}}>
+          <input type="checkbox" checked={onlyToAnalyze} onChange={(e) => setOnlyToAnalyze(e.target.checked)} />
+          À analyser (NCC ou NPS ≤ 7)
+        </label>
+      </div>
+
+      <div className="stat-row" style={{marginBottom:16}}>
+        <StatCard label="Réponses (filtre actif)" value={filtered.length} tone="neutral" />
+        <StatCard label="Note NCC moyenne" value={avgNCC !== null ? avgNCC+"/10" : "—"} tone={avgNCC!==null && avgNCC<8.1 ? "bad":"good"} />
+        <StatCard label="Score NPS agrégé" value={nps !== null ? nps : "—"} tone={nps!==null && nps<0 ? "bad":"good"} sub="% promoteurs − % détracteurs" />
+        <StatCard label="À analyser (total)" value={toAnalyzeCount} tone={toAnalyzeCount>0 ? "bad":"good"} />
+      </div>
+
+      <div className="card" style={{padding:0, overflow:"hidden"}}>
+        <div style={{overflowX:"auto"}}>
+          <table>
+            <thead>
+              <tr>{["Manager","Agent","Date","N° demande","Canal","Score NCC","Score NPS"].map((h) => <th key={h}>{h}</th>)}</tr>
+            </thead>
+            <tbody>
+              {filtered.slice(0,300).map((r) => {
+                const toAnalyze = (r.scoreNCC !== null && r.scoreNCC <= 7) || (r.scoreNPS !== null && r.scoreNPS <= 7);
+                return (
+                  <Fragment key={r.ndemande}>
+                    <tr className={toAnalyze ? "alert-row" : ""}>
+                      <td>{r.manager}</td>
+                      <td>{r.conseiller}</td>
+                      <td style={{whiteSpace:"nowrap"}}>{r.date || "—"}</td>
+                      <td>
+                        <button className="btn" style={{padding:"2px 8px", fontSize:12}} onClick={() => setExpanded(expanded===r.ndemande ? null : r.ndemande)}>
+                          {r.ndemande} {expanded===r.ndemande ? "▴" : "▾"}
+                        </button>
+                      </td>
+                      <td style={{fontSize:12, color:"var(--textMuted)"}}>Non déterminé</td>
+                      <td style={{fontWeight:600, color: r.scoreNCC!==null && r.scoreNCC<=7 ? "var(--red)" : "var(--green)"}}>{r.scoreNCC !== null ? r.scoreNCC+"/10" : "—"}</td>
+                      <td style={{fontWeight:600, color: r.scoreNPS!==null && r.scoreNPS<=7 ? "var(--red)" : "var(--green)"}}>{r.scoreNPS !== null ? r.scoreNPS : "—"}</td>
+                    </tr>
+                    {expanded === r.ndemande && (
+                      <tr>
+                        <td colSpan="7" style={{background:"var(--purpleSoft)", padding:"12px 16px"}}>
+                          <div style={{fontSize:12, fontWeight:600, color:"var(--purpleDark)", marginBottom:4}}>Motif principal</div>
+                          <div style={{fontSize:13, marginBottom:8}}>{r.motif || "—"}</div>
+                          <div style={{fontSize:12, fontWeight:600, color:"var(--purpleDark)", marginBottom:4}}>Verbatim client</div>
+                          <div style={{fontSize:13}}>{r.verbatim || "Aucun commentaire renseigné."}</div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
+              {filtered.length === 0 && (
+                <tr><td colSpan="7" style={{textAlign:"center", padding:20, color:"var(--textMuted)"}}>Aucune réponse ne correspond à ces filtres.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        {filtered.length > 300 && (
+          <div style={{textAlign:"center", padding:8, fontSize:12, color:"var(--textMuted)"}}>Affichage limité à 300 lignes — affine les filtres pour voir le reste.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ImportView({ ecarts, setEcarts, onImportJSON, roster, setRoster, nccResponses, setNccResponses, allEvaluations, setAllEvaluations }) {
   const [status, setStatus] = useState(null);
   const [jsonStatus, setJsonStatus] = useState(null);
   const [rosterStatus, setRosterStatus] = useState(null);
+  const [nccStatus, setNccStatus] = useState(null);
+  const [evalStatus, setEvalStatus] = useState(null);
   const [preview, setPreview] = useState([]);
+
+  function handleAllEvaluationsFile(file){
+    const isExcel = /\.xlsx?$/i.test(file.name);
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        let rows = [];
+        if (isExcel) {
+          const wb = XLSX.read(evt.target.result, {type:"binary"});
+          rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {defval:""});
+        } else {
+          rows = Papa.parse(evt.target.result, {header:true, skipEmptyLines:true}).data;
+        }
+        const mapped = rows.map((r) => ({
+          indicateur: r["Indicateur"] || r["indicateur"] || "",
+          conseiller: String(r["Conseiller"] || r["conseiller"] || "").trim(),
+          score: r["Score"] !== undefined && r["Score"] !== "" ? Number(r["Score"]) : (r["score"] !== undefined && r["score"] !== "" ? Number(r["score"]) : null),
+          statut: r["Statut"] || r["statut"] || "",
+          date: r["Date"] || r["date"] || "",
+          semaine: r["Semaine"] || r["semaine"] || "",
+        })).filter((r) => r.conseiller && r.indicateur);
+
+        const key = (r) => [r.indicateur, r.conseiller, r.date, r.semaine, r.score, r.statut].join("|");
+        const existingKeys = new Set((allEvaluations||[]).map(key));
+        const news = mapped.filter((r) => !existingKeys.has(key(r)));
+        setAllEvaluations([...(allEvaluations||[]), ...news]);
+        setEvalStatus({ ok:true, msg: `${mapped.length} évaluation(s) lue(s), ${news.length} nouvelle(s) ajoutée(s) (${mapped.length-news.length} doublon(s) ignoré(s)).` });
+      } catch(err){
+        setEvalStatus({ ok:false, msg:"Fichier illisible — colonnes attendues : Indicateur, Conseiller, Score (Voix/Mail/NCC) ou Statut (OK/KO/SI pour Process/Transfert), Date, Semaine." });
+      }
+    };
+    if (isExcel) reader.readAsBinaryString(file); else reader.readAsText(file);
+  }
+  function downloadEvalTemplate(){
+    exportCSV([
+      { Indicateur:"Hubicus Voix", Conseiller:"Rosa", Score:91, Statut:"", Date:"2026-07-20", Semaine:"S29" },
+      { Indicateur:"Conformité Transfert", Conseiller:"Rosa", Score:"", Statut:"OK", Date:"2026-07-20", Semaine:"S29" },
+    ], "modele_toutes_evaluations.csv");
+  }
+
+  function handleNCCImportFile(file){
+    const isExcel = /\.xlsx?$/i.test(file.name);
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        let rows = [];
+        if (isExcel) {
+          const wb = XLSX.read(evt.target.result, {type:"binary"});
+          rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {defval:""});
+        } else {
+          rows = Papa.parse(evt.target.result, {header:true, skipEmptyLines:true}).data;
+        }
+        const parsed = parseNCCRows(rows);
+        const existingKeys = new Set((nccResponses||[]).map((p) => p.ndemande));
+        const news = parsed.filter((p) => !existingKeys.has(p.ndemande));
+        setNccResponses([...(nccResponses||[]), ...news]);
+        setNccStatus({ ok:true, msg: `${parsed.length} réponse(s) lue(s) dans le fichier, dont ${news.length} nouvelle(s) ajoutée(s) (${parsed.length-news.length} doublon(s) ignoré(s) par N° demande).` });
+      } catch(err){
+        setNccStatus({ ok:false, msg:"Fichier illisible — colonnes attendues : Conseiller, N° Demande, Question, Réponse, Date de L'enquête (format 'une ligne par question', comme les exports Reporting_Satisfaction_Client)." });
+      }
+    };
+    if (isExcel) reader.readAsBinaryString(file); else reader.readAsText(file);
+  }
 
   function handleRosterFile(file){
     const isExcel = /\.xlsx?$/i.test(file.name);
@@ -1661,6 +2138,46 @@ function ImportView({ ecarts, setEcarts, onImportJSON, roster, setRoster }) {
         )}
       </div>
 
+      <div className="card" style={{marginBottom:16}}>
+        <div style={{fontWeight:600, color:"var(--purpleDark)", marginBottom:8, fontSize:14}}>Importer les réponses NCC (pour l'onglet Analyse NPS)</div>
+        <p style={{fontSize:13, color:"var(--textMuted)", marginTop:0}}>
+          Fichier brut d'enquête satisfaction (une ligne par question — même format que « Reporting_Satisfaction_Client »),
+          colonnes attendues : <code>Conseiller</code>, <code>N° Demande</code>, <code>Question</code>, <code>Réponse</code>,
+          <code>Date de L'enquête</code>. Alimente le score NCC (question 1), le score NPS (question 4) et le verbatim
+          (question 5) de l'onglet Analyse NPS. Les doublons sont ignorés automatiquement par N° de demande.
+        </p>
+        <label className="drop">
+          ⬆ Choisir un fichier réponses NCC (.csv, .xlsx)
+          <input type="file" accept=".csv,.xlsx,.xls" style={{display:"none"}} onChange={(e) => e.target.files[0] && handleNCCImportFile(e.target.files[0])} />
+        </label>
+        {nccStatus && <div className={"status-msg " + (nccStatus.ok ? "ok" : "err")}>{nccStatus.msg}</div>}
+        {nccResponses && nccResponses.length > 0 && (
+          <p style={{fontSize:12, color:"var(--textMuted)", marginTop:10}}>{nccResponses.length} réponse(s) NCC actuellement chargée(s) pour l'analyse NPS.</p>
+        )}
+      </div>
+
+      <div className="card" style={{marginBottom:16}}>
+        <div style={{fontWeight:600, color:"var(--purpleDark)", marginBottom:8, fontSize:14}}>Importer toutes les évaluations (score exact par conseiller)</div>
+        <p style={{fontSize:13, color:"var(--textMuted)", marginTop:0}}>
+          Contrairement aux écarts (qui ne gardent que les évaluations sous l'objectif), ce fichier doit contenir
+          <strong> toutes</strong> les évaluations réalisées (conformes et non conformes), pour calculer une vraie
+          moyenne par conseiller dans l'onglet Suivi performance. Colonnes : <code>Indicateur</code>, <code>Conseiller</code>,
+          <code>Score</code> (0-100 pour Voix/Mail, 0-10 pour NCC) <em>ou</em> <code>Statut</code> (OK/KO/SI pour
+          Process Auchan/Interne/Transfert), <code>Date</code>, <code>Semaine</code>.
+        </p>
+        <div style={{display:"flex", flexWrap:"wrap", gap:12}}>
+          <label className="drop" style={{flex:1, minWidth:220}}>
+            ⬆ Choisir un fichier toutes évaluations (.csv, .xlsx)
+            <input type="file" accept=".csv,.xlsx,.xls" style={{display:"none"}} onChange={(e) => e.target.files[0] && handleAllEvaluationsFile(e.target.files[0])} />
+          </label>
+          <button className="btn" onClick={downloadEvalTemplate}>⬇ Télécharger le modèle CSV</button>
+        </div>
+        {evalStatus && <div className={"status-msg " + (evalStatus.ok ? "ok" : "err")}>{evalStatus.msg}</div>}
+        {allEvaluations && allEvaluations.length > 0 && (
+          <p style={{fontSize:12, color:"var(--textMuted)", marginTop:10}}>{allEvaluations.length} évaluation(s) complète(s) actuellement chargée(s).</p>
+        )}
+      </div>
+
 
       {preview.length > 0 && (
         <div className="card" style={{overflowX:"auto", marginTop:14}}>
@@ -1682,21 +2199,21 @@ function ImportView({ ecarts, setEcarts, onImportJSON, roster, setRoster }) {
 /* ============================================================
    VUE : EXTRACTIONS / EXPORT
    ============================================================ */
-function ExportView({ ecarts, weekly, roster }) {
+function ExportView({ ecarts, weekly, roster, nccResponses, allEvaluations }) {
   const [fMgr, setFMgr] = useState("Tous");
   const [fInd, setFInd] = useState("Tous");
   const [fStat, setFStat] = useState("Tous");
 
   const filtered = useMemo(() => ecarts.filter((e) => {
-    if (fMgr !== "Tous" && e.manager !== fMgr) return false;
+    if (fMgr !== "Tous" && getEffectiveManager(e, roster) !== fMgr) return false;
     if (fInd !== "Tous" && e.indicateur !== fInd) return false;
     if (fStat !== "Tous" && e.statut !== fStat) return false;
     return true;
-  }), [ecarts, fMgr, fInd, fStat]);
+  }), [ecarts, fMgr, fInd, fStat, roster]);
 
   function exportSelection(){
     exportCSV(filtered.map((e) => ({
-      Indicateur:e.indicateur, Conseiller:e.conseiller, Manager:e.manager, Semaine:e.semaine,
+      Indicateur:e.indicateur, Conseiller:e.conseiller, Manager:getEffectiveManager(e, roster), Semaine:e.semaine,
       Statut:e.statut, "Action réalisée":e.action, "Date du débriefing":e.dateDebrief, Constat:e.constat,
     })), "actions_deployees.csv");
   }
@@ -1719,7 +2236,7 @@ function ExportView({ ecarts, weekly, roster }) {
           <tbody>
             {filtered.slice(0,50).map((e) => (
               <tr key={e.id}>
-                <td>{e.conseiller}</td><td>{e.manager}</td>
+                <td>{e.conseiller}</td><td>{getEffectiveManager(e, roster)}</td>
                 <td style={{fontSize:12}}>{e.indicateur}</td>
                 <td><Badge statut={e.statut} /></td>
                 <td style={{fontSize:12}}><span className="truncate" style={{maxWidth:320}}>{e.action || "—"}</span></td>
@@ -1732,8 +2249,8 @@ function ExportView({ ecarts, weekly, roster }) {
 
       <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))", gap:12, marginBottom:16}}>
         <button className="btn primary" onClick={exportSelection}>⬇ Exporter la sélection (CSV)</button>
-        <button className="btn outline" onClick={() => exportExcel(ecarts, weekly)}>📊 Générer le fichier Excel complet</button>
-        <button className="btn" onClick={() => exportForClaude(ecarts, weekly, roster)}>⧉ Export pour régénérer le PowerPoint</button>
+        <button className="btn outline" onClick={() => exportExcel(ecarts, weekly, roster)}>📊 Générer le fichier Excel complet</button>
+        <button className="btn" onClick={() => exportForClaude(ecarts, weekly, roster, nccResponses, allEvaluations)}>⧉ Export pour régénérer le PowerPoint</button>
       </div>
 
       <div className="notice warn">
@@ -1754,30 +2271,38 @@ function App(){
   const [ecarts, setEcarts] = useState(SEED_ECARTS);
   const [weekly, setWeekly] = useState(SEED_WEEKLY);
   const [roster, setRoster] = useState(SEED_ROSTER);
+  const [nccResponses, setNccResponses] = useState([]);
+  const [allEvaluations, setAllEvaluations] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [connStatus, setConnStatus] = useState("connecting"); // connecting | ok | unconfigured | error
   const [connError, setConnError] = useState("");
   const firstLoad = React.useRef(true);
-  const remoteUpdateRef = React.useRef({ ecarts: false, weekly: false, roster: false });
+  const remoteUpdateRef = React.useRef({ ecarts: false, weekly: false, roster: false, nccResponses: false, allEvaluations: false });
 
   // Chargement initial + abonnement temps réel
   useEffect(() => {
     let unsubEcarts = () => {};
     let unsubWeekly = () => {};
     let unsubRoster = () => {};
+    let unsubNcc = () => {};
+    let unsubEval = () => {};
 
     (async () => {
       const resE = await fsLoad(STORAGE_KEY_ECARTS, SEED_ECARTS);
       const resW = await fsLoad(STORAGE_KEY_WEEKLY, SEED_WEEKLY);
       const resR = await fsLoad(STORAGE_KEY_ROSTER, SEED_ROSTER);
+      const resN = await fsLoad(STORAGE_KEY_NCC_RESPONSES, []);
+      const resAE = await fsLoad(STORAGE_KEY_ALL_EVALUATIONS, []);
       // Le chargement initial ne doit jamais déclencher une ré-écriture immédiate :
       // on vient de lire cette donnée, pas besoin de la réenregistrer telle quelle.
-      remoteUpdateRef.current = { ecarts: true, weekly: true, roster: true };
+      remoteUpdateRef.current = { ecarts: true, weekly: true, roster: true, nccResponses: true, allEvaluations: true };
       setEcarts(resE.value);
       setWeekly(resW.value);
       // Un tableau vide enregistré avant l'ajout du roster ne doit pas écraser SEED_ROSTER
       setRoster(resR.value && resR.value.length > 0 ? resR.value : SEED_ROSTER);
+      setNccResponses(resN.value || []);
+      setAllEvaluations(resAE.value || []);
       setConnStatus(resE.status);
       setConnError(resE.error || "");
       setLoaded(true);
@@ -1787,10 +2312,12 @@ function App(){
         unsubEcarts = fsSubscribe(STORAGE_KEY_ECARTS, (val) => { remoteUpdateRef.current.ecarts = true; setEcarts(val); });
         unsubWeekly = fsSubscribe(STORAGE_KEY_WEEKLY, (val) => { remoteUpdateRef.current.weekly = true; setWeekly(val); });
         unsubRoster = fsSubscribe(STORAGE_KEY_ROSTER, (val) => { remoteUpdateRef.current.roster = true; setRoster(val && val.length > 0 ? val : SEED_ROSTER); });
+        unsubNcc = fsSubscribe(STORAGE_KEY_NCC_RESPONSES, (val) => { remoteUpdateRef.current.nccResponses = true; setNccResponses(val || []); });
+        unsubEval = fsSubscribe(STORAGE_KEY_ALL_EVALUATIONS, (val) => { remoteUpdateRef.current.allEvaluations = true; setAllEvaluations(val || []); });
       }
     })();
 
-    return () => { unsubEcarts(); unsubWeekly(); unsubRoster(); };
+    return () => { unsubEcarts(); unsubWeekly(); unsubRoster(); unsubNcc(); unsubEval(); };
   }, []);
 
   // Sauvegarde (debounce) à chaque changement, une fois le chargement initial fait —
@@ -1798,8 +2325,9 @@ function App(){
   // (sinon un onglet resté ouvert peut "renvoyer" une donnée périmée en boucle).
   useEffect(() => {
     if (!loaded) return;
-    if (remoteUpdateRef.current.ecarts || remoteUpdateRef.current.weekly || remoteUpdateRef.current.roster) {
-      remoteUpdateRef.current = { ecarts: false, weekly: false, roster: false };
+    if (remoteUpdateRef.current.ecarts || remoteUpdateRef.current.weekly || remoteUpdateRef.current.roster
+        || remoteUpdateRef.current.nccResponses || remoteUpdateRef.current.allEvaluations) {
+      remoteUpdateRef.current = { ecarts: false, weekly: false, roster: false, nccResponses: false, allEvaluations: false };
       return;
     }
     setSaving(true);
@@ -1808,11 +2336,13 @@ function App(){
         await fsSave(STORAGE_KEY_ECARTS, ecarts);
         await fsSave(STORAGE_KEY_WEEKLY, weekly);
         await fsSave(STORAGE_KEY_ROSTER, roster);
+        await fsSave(STORAGE_KEY_NCC_RESPONSES, nccResponses);
+        await fsSave(STORAGE_KEY_ALL_EVALUATIONS, allEvaluations);
       }
       setSaving(false);
     }, 500);
     return () => clearTimeout(t);
-  }, [ecarts, weekly, roster, loaded, connStatus]);
+  }, [ecarts, weekly, roster, nccResponses, allEvaluations, loaded, connStatus]);
 
   async function saveNow(ecartsToSave, weeklyToSave){
     if (connStatus !== "ok") return { ok: false, reason: connStatus };
@@ -1827,12 +2357,16 @@ function App(){
     if (Array.isArray(data.ecarts)) setEcarts(data.ecarts.map((e) => ({...e, id: e.id ?? uid()})));
     if (Array.isArray(data.historique_kpi)) setWeekly(data.historique_kpi);
     if (Array.isArray(data.repartition_equipes)) setRoster(data.repartition_equipes);
+    if (Array.isArray(data.ncc_responses)) setNccResponses(data.ncc_responses);
+    if (Array.isArray(data.toutes_evaluations)) setAllEvaluations(data.toutes_evaluations);
   }
 
   const tabs = [
     { id:"reporting", label:"Reporting", icon:"📊" },
     { id:"performance", label:"Suivi performance", icon:"📈" },
     { id:"debriefing", label:"Suivi débriefing", icon:"📋" },
+    { id:"roster", label:"Répartition équipe", icon:"🧑‍🤝‍🧑" },
+    { id:"nps", label:"Analyse NPS", icon:"⭐" },
     { id:"import", label:"Importer", icon:"⬆" },
     { id:"export", label:"Extractions", icon:"🗄" },
   ];
@@ -1892,10 +2426,12 @@ function App(){
 
       <div className="wrap content">
         {tab === "reporting" && <ReportingView ecarts={ecarts} weekly={weekly} roster={roster} />}
-        {tab === "performance" && <PerformanceView ecarts={ecarts} weekly={weekly} roster={roster} />}
-        {tab === "debriefing" && <DebriefingView ecarts={ecarts} setEcarts={setEcarts} weekly={weekly} onSaveNow={saveNow} />}
-        {tab === "import" && <ImportView ecarts={ecarts} setEcarts={setEcarts} onImportJSON={importFromJSON} roster={roster} setRoster={setRoster} />}
-        {tab === "export" && <ExportView ecarts={ecarts} weekly={weekly} roster={roster} />}
+        {tab === "performance" && <PerformanceView ecarts={ecarts} weekly={weekly} roster={roster} allEvaluations={allEvaluations} />}
+        {tab === "debriefing" && <DebriefingView ecarts={ecarts} setEcarts={setEcarts} weekly={weekly} onSaveNow={saveNow} roster={roster} />}
+        {tab === "roster" && <RosterView roster={roster} setRoster={setRoster} />}
+        {tab === "nps" && <NPSView nccResponses={nccResponses} roster={roster} />}
+        {tab === "import" && <ImportView ecarts={ecarts} setEcarts={setEcarts} onImportJSON={importFromJSON} roster={roster} setRoster={setRoster} nccResponses={nccResponses} setNccResponses={setNccResponses} allEvaluations={allEvaluations} setAllEvaluations={setAllEvaluations} />}
+        {tab === "export" && <ExportView ecarts={ecarts} weekly={weekly} roster={roster} nccResponses={nccResponses} allEvaluations={allEvaluations} />}
       </div>
 
       <div className="footer">

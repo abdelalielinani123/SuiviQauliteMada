@@ -1231,11 +1231,27 @@ function computeKpiTrend(ecarts, allEvaluations, kpi, managers, roster, periodCt
   return byDay ? rows.sort((a,b) => a.label.localeCompare(b.label)) : rows.sort((a,b) => extractWeekNum(a.label) - extractWeekNum(b.label));
 }
 
+/* Même logique que computeKpiTrend mais pour plusieurs indicateurs à la fois (graphique multi-séries
+   "Évolution des résultats" en haut de l'onglet Suivi performance). */
+function computeMultiKpiTrend(ecarts, allEvaluations, kpis, managers, roster, periodCtx){
+  const byLabel = {};
+  kpis.forEach((kpi) => {
+    computeKpiTrend(ecarts, allEvaluations, kpi, managers, roster, periodCtx).forEach((t) => {
+      if (!byLabel[t.label]) byLabel[t.label] = { label: t.label };
+      byLabel[t.label][kpi] = kpi.includes("NCC") ? Math.round(t.score*100)/10 : t.score;
+    });
+  });
+  const byDay = (periodCtx && (periodCtx.granBreakdown === "jour" || periodCtx.granBreakdown === "plage"));
+  return Object.values(byLabel).sort((a,b) => byDay ? a.label.localeCompare(b.label) : extractWeekNum(a.label) - extractWeekNum(b.label));
+}
+
 /* ============================================================
    VUE : SUIVI DE LA PERFORMANCE
    ============================================================ */
 function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
   const [granularity, setGranularity] = useState("semaine");
+  const [periodTop, setPeriodTop] = useState([]);
+  const [dateRangeTop, setDateRangeTop] = useState({ start:"", end:"" });
   const [visibleIndicators, setVisibleIndicators] = useState(() => new Set(INDICATEURS));
   const [fManager, setFManager] = useState([]);
   const [fConseiller, setFConseiller] = useState("Tous");
@@ -1312,6 +1328,13 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
     };
   }, [granBreakdown, periodBreakdown, dateRangeBreakdown]);
 
+  /* Tendance multi-indicateurs pour le graphique "Évolution des résultats" en haut de la vue —
+     dynamique selon la granularité (jour/semaine/mois), la période choisie et le(s) manager(s). */
+  const topTrend = useMemo(
+    () => computeMultiKpiTrend(ecarts, allEvaluations, [...visibleIndicators], fManager, roster, { granBreakdown: granularity, periodBreakdown: periodTop, dateRange: dateRangeTop }),
+    [ecarts, allEvaluations, visibleIndicators, fManager, roster, granularity, periodTop, dateRangeTop]
+  );
+
   /* Tendance du KPI sélectionné, sur la période et le(s) manager(s) filtrés — alimente le graphique dynamique.
      La granularité (jour vs semaine) s'adapte au filtre actif (voir computeKpiTrend). */
   const kpiTrend = useMemo(
@@ -1352,29 +1375,16 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
     });
   }
 
-  const granOptions = [
-    { id: "jour", label: "Jour" },
-    { id: "semaine", label: "Semaine" },
-    { id: "mois", label: "Mois" },
-  ];
-
   return (
     <div>
       <SectionTitle icon="📈">Suivi de la performance</SectionTitle>
 
-      <div className="filters" style={{marginBottom:12}}>
-        <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600}}>Vue :</span>
-        {granOptions.map((g) => (
-          <button
-            key={g.id}
-            className="btn"
-            style={granularity === g.id ? { background:"var(--purple)", color:"#fff", borderColor:"var(--purple)" } : {}}
-            onClick={() => setGranularity(g.id)}
-          >
-            {g.label}
-          </button>
-        ))}
-      </div>
+      <PeriodFilter
+        granularity={granularity} setGranularity={setGranularity}
+        value={periodTop} setValue={setPeriodTop}
+        weekOptions={weekOptionsB} monthOptions={monthOptionsB} dayOptions={dayOptionsB}
+        allowRange={true} dateRange={dateRangeTop} setDateRange={setDateRangeTop}
+      />
 
       <div className="filters" style={{marginBottom:16}}>
         <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600}}>Indicateurs affichés :</span>
@@ -1392,50 +1402,36 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
 
       <div className="filters" style={{marginBottom:16}}>
         <MultiSelectDropdown label="Manager :" options={managerOptions} selected={fManager} setSelected={(v) => { setFManager(v); setFConseiller("Tous"); }} />
-        {fManager.length > 0 && (
-          <span style={{fontSize:11, color:"var(--textMuted)"}}>
-            (s'applique à la vue Jour ci-dessous ; les vues Semaine et Mois restent globales, non disponibles par manager)
-          </span>
-        )}
       </div>
 
-      {granularity === "semaine" && (
-        <div className="card">
-          <div style={{fontSize:13, fontWeight:600, color:"var(--purpleDark)", marginBottom:10}}>
-            Évolution des résultats par semaine (S19 à S28)
-          </div>
-          <LineChartMulti data={weekly} series={series} xKey="semaine" />
+      <div className="card">
+        <div style={{fontSize:13, fontWeight:600, color:"var(--purpleDark)", marginBottom:10}}>
+          Évolution des résultats {granularity==="jour" ? "par jour" : granularity==="mois" ? "par mois" : granularity==="plage" ? "sur la plage sélectionnée" : "par semaine"}
+          {fManager.length > 0 ? ` — ${fManager.join(", ")}` : ""}
         </div>
-      )}
-
-      {granularity === "mois" && (
-        <div className="card">
-          <div style={{fontSize:13, fontWeight:600, color:"var(--purpleDark)", marginBottom:10}}>
-            Évolution des résultats par mois (moyenne des semaines disponibles)
-          </div>
-          <LineChartMulti data={monthly} series={series} xKey="mois" />
+        {topTrend.length > 1 ? (
+          <LineChartMulti data={topTrend} series={series} xKey="label" />
+        ) : (
+          <p style={{fontSize:13, color:"var(--textMuted)"}}>
+            {topTrend.length === 1
+              ? "Un seul point sur cette période — élargis le filtre pour voir une évolution."
+              : "Aucune donnée exploitable pour les indicateurs et la période sélectionnés."}
+          </p>
+        )}
+        {granularity === "jour" && (
           <div className="notice info" style={{marginTop:14}}>
             <span className="ic">ℹ</span>
-            <div>Chaque point mensuel est la moyenne des semaines disponibles sur ce mois (Mai = S19-S22,
-            Juin = S23-S26, Juillet = S27-S28 à ce jour). Un indicateur sans donnée sur tout le mois n'apparaît pas.</div>
+            <div>Vue par jour : taux de conformité calculé sur les évaluations complètes du jour quand elles sont disponibles ;
+            à défaut, sur les seuls écarts déjà enregistrés pour ce jour.</div>
           </div>
-        </div>
-      )}
-
-      {granularity === "jour" && (
-        <div className="card">
-          <div style={{fontSize:13, fontWeight:600, color:"var(--purpleDark)", marginBottom:10}}>
-            Nombre d'évaluations en écart constatées par jour
-          </div>
-          <DayCountChart data={daily} />
+        )}
+        {granularity === "mois" && (
           <div className="notice info" style={{marginTop:14}}>
             <span className="ic">ℹ</span>
-            <div>Vue par jour = volume d'écarts constatés (comptage), et non un taux de conformité : les fichiers
-            source ne fournissent un taux calculé qu'à la semaine. Seules les lignes avec une date renseignée et un
-            indicateur sélectionné ci-dessus apparaissent ici ({filteredEcartsForDaily.filter((e) => e.date).length}/{filteredEcartsForDaily.length} lignes datées).</div>
+            <div>Chaque point mensuel est la moyenne des semaines disponibles sur ce mois. Un indicateur sans donnée sur tout le mois n'apparaît pas.</div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       <div style={{marginTop:28}}>
         <SectionTitle icon="🧑‍🤝‍🧑">Résultats par conseiller et par équipe</SectionTitle>

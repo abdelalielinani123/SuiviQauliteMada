@@ -1640,22 +1640,6 @@ function DebriefingView({ ecarts, setEcarts, weekly, onSaveNow, roster, allEvalu
   const [periodValue, setPeriodValue] = useState([]);
   const [expanded, setExpanded] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
-  const [showAutoDetected, setShowAutoDetected] = useState(true);
-
-  const autoDetected = useMemo(() => computeAutoDetectedEcarts(allEvaluations, ecarts, roster), [allEvaluations, ecarts, roster]);
-
-  async function promoteAutoDetected(item){
-    const nextId = ecarts.reduce((max, e) => Math.max(max, Number(e.id) || 0), 0) + 1;
-    const promoted = {
-      id: nextId, indicateur: item.indicateur, conseiller: item.conseiller, reference: "",
-      semaine: item.semaine, date: item.date, ecart: item.ecart, statut: "À traiter", action: "",
-      dateDebrief: "", constat: "", managerDispatch: item.managerDispatch, manager: item.manager, alerte: "",
-    };
-    const updated = [...ecarts, promoted];
-    setEcarts(updated);
-    if (onSaveNow) await onSaveNow(updated, weekly);
-  }
-
   const weekOptions = useMemo(() => {
     const set = new Set(ecarts.map((e) => extractWeekCode(e.semaine)).filter(Boolean));
     return [...set].sort();
@@ -1706,39 +1690,11 @@ function DebriefingView({ ecarts, setEcarts, weekly, onSaveNow, roster, allEvalu
     <div>
       <SectionTitle icon="📋">Suivi des débriefings managers</SectionTitle>
 
-      {autoDetected.length > 0 && (
-        <div className="card" style={{marginBottom:16, borderLeft:"4px solid var(--amber)"}}>
-          <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", cursor:"pointer"}} onClick={() => setShowAutoDetected((v) => !v)}>
-            <div style={{fontWeight:600, fontSize:14, color:"var(--amber)"}}>
-              ⚠ {autoDetected.length} écart(s) détecté(s) automatiquement — pas encore dans le Suivi débriefing
-            </div>
-            <span>{showAutoDetected ? "▴" : "▾"}</span>
-          </div>
-          <div style={{fontSize:12, color:"var(--textMuted)", marginTop:4}}>
-            Calculés directement depuis les évaluations brutes des 14 derniers jours (score sous objectif, ou statut KO) — pas encore saisis/dispatchés manuellement dans ce fichier de suivi.
-          </div>
-          {showAutoDetected && (
-            <div style={{overflowX:"auto", marginTop:12}}>
-              <table>
-                <thead><tr>{["Indicateur","Conseiller","Date","Écart constaté","Manager",""].map((h) => <th key={h}>{h}</th>)}</tr></thead>
-                <tbody>
-                  {autoDetected.slice(0,200).map((a) => (
-                    <tr key={a.id}>
-                      <td>{a.indicateur}</td>
-                      <td>{a.conseiller}</td>
-                      <td style={{whiteSpace:"nowrap"}}>{a.date || "—"}</td>
-                      <td>{a.ecart}</td>
-                      <td>{a.manager}</td>
-                      <td><button className="btn" style={{padding:"2px 8px", fontSize:12}} onClick={() => promoteAutoDetected(a)}>+ Ajouter au suivi</button></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {autoDetected.length > 200 && <div style={{fontSize:12, color:"var(--textMuted)", marginTop:6}}>Affichage limité aux 200 plus récents ({autoDetected.length} au total).</div>}
-            </div>
-          )}
-        </div>
-      )}
+      <div className="notice" style={{marginBottom:16, fontSize:12}}>
+        ℹ️ Les écarts détectés automatiquement depuis les évaluations brutes (14 derniers jours, sous objectif ou KO)
+        sont désormais ajoutés ici automatiquement, sans action manuelle — repérables par le constat
+        "Détecté automatiquement depuis les évaluations brutes."
+      </div>
 
       <PeriodFilter
         granularity={granularity} setGranularity={setGranularity}
@@ -2663,6 +2619,26 @@ function App(){
     if (Array.isArray(data.ncc_responses)) setNccResponses(data.ncc_responses);
     if (Array.isArray(data.toutes_evaluations)) setAllEvaluations(data.toutes_evaluations);
   }
+
+  /* Intègre automatiquement les écarts détectés depuis les évaluations brutes (14 derniers jours, sous
+     objectif ou KO) dans le suivi débriefing — sans action manuelle. Se stabilise tout seul : une fois
+     ajoutés, ces écarts sont "connus" et ne sont plus proposés une seconde fois. */
+  useEffect(() => {
+    if (!auth) return;
+    if ((!ecarts || ecarts.length === 0) && (!allEvaluations || allEvaluations.length === 0)) return;
+    const pending = computeAutoDetectedEcarts(allEvaluations, ecarts, roster);
+    if (pending.length === 0) return;
+    const startId = ecarts.reduce((max, e) => Math.max(max, Number(e.id) || 0), 0) + 1;
+    const promoted = pending.map((item, i) => ({
+      id: startId + i, indicateur: item.indicateur, conseiller: item.conseiller, reference: "",
+      semaine: item.semaine, date: item.date, ecart: item.ecart, statut: "À traiter", action: "",
+      dateDebrief: "", constat: "Détecté automatiquement depuis les évaluations brutes.",
+      managerDispatch: item.managerDispatch, manager: item.manager, alerte: "",
+    }));
+    const updated = [...ecarts, ...promoted];
+    setEcarts(updated);
+    if (connStatus === "ok") saveNow(updated, weekly);
+  }, [allEvaluations, roster, ecarts, auth, connStatus]);
 
   function handleLogin(session){
     try { localStorage.setItem(STORAGE_KEY_AUTH_SESSION, JSON.stringify(session)); } catch(err) {}

@@ -40,7 +40,6 @@
 
 
 
-
   const isConfigured = firebaseConfig.apiKey !== "COLLE_TA_CLE_API_ICI";
   window.__firebaseConfigured = isConfigured;
 
@@ -1461,6 +1460,103 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
             <div>Chaque point mensuel est la moyenne des semaines disponibles sur ce mois. Un indicateur sans donnée sur tout le mois n'apparaît pas.</div>
           </div>
         )}
+      </div>
+
+      <div style={{marginTop:28}}>
+        <SectionTitle icon="🧑‍🤝‍🧑">Résultats par conseiller et par équipe</SectionTitle>
+
+        <div className="filters" style={{marginBottom:10}}>
+          <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600}}>KPI :</span>
+          <select value={kpiFilter} onChange={(e) => setKpiFilter(e.target.value)}>
+            {INDICATEURS.map((k) => <option key={k}>{k}</option>)}
+          </select>
+          <MultiSelectDropdown label="Manager :" options={managerOptions} selected={fManager} setSelected={(v) => { setFManager(v); setFConseiller("Tous"); }} />
+          <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600, marginLeft:8}}>Conseiller :</span>
+          <select value={fConseiller} onChange={(e) => setFConseiller(e.target.value)}>
+            <option>Tous</option>
+            {conseillerOptions.map((c) => <option key={c}>{c}</option>)}
+          </select>
+        </div>
+
+        <PeriodFilter
+          granularity={granBreakdown} setGranularity={setGranBreakdown}
+          value={periodBreakdown} setValue={setPeriodBreakdown}
+          weekOptions={weekOptionsB} monthOptions={monthOptionsB} dayOptions={dayOptionsB}
+          allowRange={true} dateRange={dateRangeBreakdown} setDateRange={setDateRangeBreakdown}
+        />
+
+        <label style={{display:"flex", alignItems:"center", gap:8, fontSize:13, marginBottom:14, cursor:"pointer"}}>
+          <input type="checkbox" checked={onlyEnEcart} onChange={(e) => setOnlyEnEcart(e.target.checked)} />
+          Agents en écart de l'objectif uniquement
+        </label>
+
+        <div className={"notice " + (hasRawDataForKpi ? "info" : "warn")} style={{marginBottom:14}}>
+          <span className="ic">{hasRawDataForKpi ? "ℹ" : "⚠"}</span>
+          <div>Objectif {kpiFilter} : <strong>{objectifKpi}</strong>.{" "}
+          {hasRawDataForKpi
+            ? "Score calculé sur l'ensemble des évaluations importées pour cet indicateur (pas seulement celles en écart)."
+            : "Aucune évaluation complète importée pour cet indicateur — le score affiché ci-dessous n'est que la moyenne des écarts déjà enregistrés (toujours sous l'objectif par construction). Importe le fichier d'évaluations complet (onglet Importer) pour un score exact par conseiller."}
+          </div>
+        </div>
+
+        <div className="grid-2col" style={{display:"grid", gridTemplateColumns:"1.4fr 1fr", gap:16}}>
+          <div className="card" style={{padding:0, overflow:"hidden"}}>
+            <div style={{padding:"12px 14px", fontSize:13, fontWeight:600, color:"var(--purpleDark)", borderBottom:"1px solid var(--greyLine)"}}>
+              Par conseiller ({conseillerBreakdown.length}) — {kpiFilter}
+            </div>
+            <div style={{overflowX:"auto", maxHeight:420, overflowY:"auto"}}>
+              <table>
+                <thead>
+                  <tr>{["Conseiller","Manager","Équipe","Score","Objectif","Nb éval.","Écarts débriefés"].map((h) => <th key={h}>{h}</th>)}</tr>
+                </thead>
+                <tbody>
+                  {conseillerBreakdown.map((c, i) => (
+                    <tr key={c.conseiller+i} style={{backgroundColor: isEnEcart(c) ? "var(--redSoft)" : (i%2 ? "var(--grey)" : "#fff")}}>
+                      <td>{c.conseiller}</td>
+                      <td>{c.manager}</td>
+                      <td style={{fontSize:12, color:"var(--textMuted)"}}>{c.statutEquipe || "—"}</td>
+                      <td style={{fontWeight:600, color: isEnEcart(c) ? "var(--red)" : "var(--green)"}}>
+                        {c.avgScore !== null ? `${c.avgScore}${c.unit}` : (c.hasRawData ? "—" : (c.total > 0 ? `${c.total} écart(s)` : "0 écart"))}
+                      </td>
+                      <td style={{fontSize:12, color:"var(--textMuted)"}}>{objectifKpi}</td>
+                      <td style={{fontSize:12, color:"var(--textMuted)"}}>{c.hasRawData ? c.nbEval : "—"}</td>
+                      <td>{c.total>0 ? `${c.done}/${c.total}` : "—"}</td>
+                    </tr>
+                  ))}
+                  {conseillerBreakdown.length === 0 && (
+                    <tr><td colSpan="7" style={{textAlign:"center", padding:20, color:"var(--textMuted)"}}>Aucun conseiller ne correspond à ces filtres.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="card" style={{padding:0, overflow:"hidden"}}>
+            <div style={{padding:"12px 14px", fontSize:13, fontWeight:600, color:"var(--purpleDark)", borderBottom:"1px solid var(--greyLine)"}}>
+              Par équipe — {kpiFilter}
+            </div>
+            <table>
+              <thead>
+                <tr>{["Manager","Conseillers en écart","Score équipe","Objectif"].map((h) => <th key={h}>{h}</th>)}</tr>
+              </thead>
+              <tbody>
+                {teamBreakdown.map((t, i) => (
+                  <tr key={t.manager} style={{backgroundColor: i%2 ? "var(--grey)" : "#fff"}}>
+                    <td style={{fontWeight:500}}>{t.manager}</td>
+                    <td>{t.nbEnEcart}/{t.nbConseillers}</td>
+                    <td style={{fontWeight:600, color: (t.avgScore !== null ? t.avgScore < OBJECTIFS[kpiFilter] : t.total>0) ? "var(--red)" : "var(--green)"}}>
+                      {t.avgScore !== null ? `${t.avgScore}${t.unit}` : (t.total > 0 ? `${t.total} écart(s)` : "0 écart")}
+                    </td>
+                    <td style={{fontSize:12, color:"var(--textMuted)"}}>{objectifKpi}</td>
+                  </tr>
+                ))}
+                {teamBreakdown.length === 0 && (
+                  <tr><td colSpan="4" style={{textAlign:"center", padding:20, color:"var(--textMuted)"}}>—</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
 
     </div>

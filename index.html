@@ -463,6 +463,60 @@ function normalizeDateStr(d){
   return parsed.toISOString().slice(0,10);
 }
 
+/* Détecte, directement à partir des évaluations brutes (toutes_evaluations), les cas en écart
+   (sous l'objectif ou KO) qui n'ont pas encore été saisis manuellement dans le Suivi débriefing.
+   Complète la liste manuelle 'ecarts' sans prétendre s'y substituer : ce sont des alertes
+   "à vérifier / pas encore dispatchées", identifiées par un simple rapprochement conseiller+jour+indicateur. */
+function computeAutoDetectedEcarts(allEvaluations, ecarts, roster, windowDays=14){
+  if (!allEvaluations || allEvaluations.length === 0) return [];
+  const knownKeys = new Set((ecarts || []).map((e) => `${e.indicateur}|${normalizeName(e.conseiller)}|${e.date}`));
+  const todayStr = new Date().toISOString().slice(0,10);
+  const cutoffStr = new Date(Date.now() - windowDays*86400000).toISOString().slice(0,10);
+  const out = [];
+  let autoId = 1;
+  allEvaluations.forEach((ev) => {
+    // Fenêtre de récence : ne remonte que les évaluations récentes (pas tout l'historique non audité),
+    // et ignore les dates aberrantes (erreurs de parsing Excel donnant des dates dans le futur lointain).
+    if (!ev.date || ev.date < cutoffStr || ev.date > todayStr) return;
+    const obj = OBJECTIFS[ev.indicateur];
+    if (obj === undefined) return;
+    const isNumeric = ev.indicateur === "Hubicus Voix" || ev.indicateur === "Hubicus Mail" || ev.indicateur.includes("NCC");
+    let ecartLabel = "";
+    if (isNumeric) {
+      if (ev.score === null || ev.score === undefined || ev.score === "") return;
+      if (Number(ev.score) >= obj) return;
+      ecartLabel = ev.indicateur.includes("NCC")
+        ? `Note client = ${ev.score}/10 (objectif ${obj}/10)`
+        : `Note = ${ev.score}% (objectif ${obj}%)`;
+    } else {
+      if (ev.statut !== "KO") return; // seuls les KO avérés sont remontés (les SI restent à l'appréciation manuelle)
+      ecartLabel = `Statut = KO (objectif ${obj}%)`;
+    }
+    const conseillerDisplay = displayConseillerName(ev.conseiller);
+    const key = `${ev.indicateur}|${normalizeName(conseillerDisplay)}|${ev.date}`;
+    if (knownKeys.has(key)) return;
+    const mgr = getConseillerManagerFromRoster(ev.conseiller, roster) || "Non trouvé";
+    out.push({
+      id: `auto-${autoId++}`,
+      indicateur: ev.indicateur,
+      conseiller: conseillerDisplay,
+      reference: "",
+      semaine: ev.semaine,
+      date: ev.date,
+      ecart: ecartLabel,
+      statut: "Non dispatché",
+      action: "",
+      dateDebrief: "",
+      constat: "",
+      managerDispatch: mgr,
+      manager: mgr,
+      alerte: "",
+      autoDetected: true,
+    });
+  });
+  return out.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+}
+
 function parseNCCRows(rows){
   const groups = {};
   rows.forEach((r) => {
@@ -740,11 +794,6 @@ function LineChartMulti({ data, series, height=340, xKey="semaine" }) {
             <text x={2} y={yFor(g)+3} fontSize="9" fill="#6B6270">{g}</text>
           </g>
         ))}
-        <line x1={padL} x2={W-padR} y1={yFor(85)} y2={yFor(85)} stroke="#96408F" strokeDasharray="4 3" />
-        <text x={W-padR-2} y={yFor(85)-4} fontSize="9" fill="#96408F" textAnchor="end">Obj. Hubicus 85%</text>
-        <line x1={padL} x2={W-padR} y1={yFor(90)} y2={yFor(90)} stroke="#5C2258" strokeDasharray="2 2" />
-        <text x={W-padR-2} y={yFor(90)-4} fontSize="9" fill="#5C2258" textAnchor="end">Obj. Process/Transfert 90%</text>
-
         {series.map((s) => (
           <path key={s.key} d={pathFor(s.key)} fill="none" stroke={s.color} strokeWidth="2.2" />
         ))}
@@ -925,7 +974,7 @@ function SectionTitle({ icon, children }) {
 /* ============================================================
    VUE : REPORTING
    ============================================================ */
-function ReportingView({ ecarts, weekly, roster }) {
+function ReportingView({ ecarts, weekly, roster, allEvaluations }) {
   const [granularity, setGranularity] = useState("tous");
   const [periodValue, setPeriodValue] = useState([]);
   const [managerFilter, setManagerFilter] = useState([]);
@@ -948,6 +997,8 @@ function ReportingView({ ecarts, weekly, roster }) {
     const set = new Set(ecarts.map((e) => e.manager).filter(Boolean));
     return MANAGERS.filter((m) => set.has(m));
   }, [ecarts]);
+
+  const autoDetectedCount = useMemo(() => computeAutoDetectedEcarts(allEvaluations, ecarts, roster).length, [allEvaluations, ecarts, roster]);
 
   const filteredForOverview = useMemo(() => {
     return ecarts.filter((e) => {
@@ -1013,6 +1064,7 @@ function ReportingView({ ecarts, weekly, roster }) {
           <StatCard label="Évaluations en écart (total)" value={total} tone="neutral" />
           <StatCard label="Restant à débriefer" value={total-totalDone} tone={(total-totalDone)>0?"bad":"good"} />
           <StatCard label="Points d'alerte récurrence" value={alertesCount} tone={alertesCount>0?"bad":"good"} sub={alertesCount>0?"conseillers à surveiller":"aucun signal"} />
+          <StatCard label="Écarts non dispatchés" value={autoDetectedCount} tone={autoDetectedCount>0?"bad":"good"} sub="détectés auto. (voir Suivi débriefing)" />
         </div>
         {anyFilterActive && (
           <p style={{fontSize:11, color:"var(--textMuted)", marginTop:8}}>
@@ -1115,30 +1167,45 @@ function extractWeekNum(code){
   return m ? parseInt(m[1], 10) : 999;
 }
 
-/* Calcule la tendance hebdomadaire d'un KPI, filtrée par manager(s) et/ou plage de dates —
-   utilisée pour le graphique dynamique du bloc "Résultats par conseiller et par équipe". */
-function computeKpiWeeklyTrend(ecarts, allEvaluations, kpi, managers, roster, dateRange){
+/* Calcule la tendance d'un KPI, filtrée par manager(s) et par la période choisie (jour/semaine/mois/plage) —
+   alimente le graphique dynamique du bloc "Résultats par conseiller et par équipe".
+   La granularité de regroupement (jour vs semaine) s'adapte au filtre actif, pour que les périodes
+   courtes (2-3 jours) affichent bien plusieurs points au lieu d'être noyées dans un seul point hebdomadaire. */
+function computeKpiTrend(ecarts, allEvaluations, kpi, managers, roster, periodCtx){
+  const { granBreakdown="tous", periodBreakdown=[], dateRange=null } = periodCtx || {};
   const evalsForKpi = (allEvaluations || []).filter((ev) => ev.indicateur === kpi);
   const hasRawData = evalsForKpi.length > 0;
   const isNumericKpi = kpi === "Hubicus Voix" || kpi === "Hubicus Mail" || kpi.includes("NCC");
+  const byDay = granBreakdown === "jour" || granBreakdown === "plage";
   const bucket = {};
 
   function inManagerScope(conseillerFull){
     if (!managers || managers.length === 0) return true;
     return managers.includes(getConseillerManagerFromRoster(conseillerFull, roster));
   }
-  function ensure(wk){
-    if (!bucket[wk]) bucket[wk] = { semaine: wk, sum:0, count:0, ok:0, total:0 };
-    return bucket[wk];
+  function inPeriod(dateStr, semaineStr){
+    if (granBreakdown === "plage") return dateInRange(dateStr, dateRange);
+    if (granBreakdown === "tous" || periodBreakdown.length === 0) return true;
+    if (granBreakdown === "jour") return periodBreakdown.includes(dateStr);
+    if (granBreakdown === "semaine") return periodBreakdown.includes(extractWeekCode(semaineStr));
+    if (granBreakdown === "mois") return periodBreakdown.includes(weekToMonth(semaineStr));
+    return true;
+  }
+  function bucketKey(dateStr, semaineStr){
+    return byDay ? dateStr : extractWeekCode(semaineStr);
+  }
+  function ensure(key){
+    if (!bucket[key]) bucket[key] = { key, sum:0, count:0, ok:0, total:0 };
+    return bucket[key];
   }
 
   if (hasRawData) {
     evalsForKpi.forEach((ev) => {
-      if (dateRange && (dateRange.start || dateRange.end) && !dateInRange(ev.date, dateRange)) return;
       if (!inManagerScope(ev.conseiller)) return;
-      const wk = extractWeekCode(ev.semaine);
-      if (!wk) return;
-      const b = ensure(wk);
+      if (!inPeriod(ev.date, ev.semaine)) return;
+      const key = bucketKey(ev.date, ev.semaine);
+      if (!key) return;
+      const b = ensure(key);
       if (isNumericKpi) {
         if (ev.score !== null && ev.score !== undefined && ev.score !== "") { b.sum += Number(ev.score); b.count += 1; }
       } else if (["OK","KO","SI"].includes(ev.statut)) {
@@ -1147,21 +1214,21 @@ function computeKpiWeeklyTrend(ecarts, allEvaluations, kpi, managers, roster, da
     });
   } else {
     ecarts.filter((e) => e.indicateur === kpi).forEach((e) => {
-      if (dateRange && (dateRange.start || dateRange.end) && !dateInRange(e.date, dateRange)) return;
       if (managers && managers.length > 0 && !managers.includes(getEffectiveManager(e, roster))) return;
-      const wk = extractWeekCode(e.semaine);
-      if (!wk) return;
+      if (!inPeriod(e.date, e.semaine)) return;
+      const key = bucketKey(e.date, e.semaine);
+      if (!key) return;
       const parsed = parseScoreFromEcart(e);
       if (!parsed) return;
-      const b = ensure(wk);
+      const b = ensure(key);
       b.sum += parsed.value; b.count += 1;
     });
   }
 
-  return Object.values(bucket)
-    .map((b) => ({ semaine: b.semaine, score: isNumericKpi ? (b.count ? Math.round((b.sum/b.count)*10)/10 : null) : (b.total ? Math.round((b.ok/b.total)*1000)/10 : null) }))
-    .filter((b) => b.score !== null)
-    .sort((a,b) => extractWeekNum(a.semaine) - extractWeekNum(b.semaine));
+  const rows = Object.values(bucket)
+    .map((b) => ({ label: b.key, score: isNumericKpi ? (b.count ? Math.round((b.sum/b.count)*10)/10 : null) : (b.total ? Math.round((b.ok/b.total)*1000)/10 : null) }))
+    .filter((b) => b.score !== null);
+  return byDay ? rows.sort((a,b) => a.label.localeCompare(b.label)) : rows.sort((a,b) => extractWeekNum(a.label) - extractWeekNum(b.label));
 }
 
 /* ============================================================
@@ -1245,10 +1312,11 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
     };
   }, [granBreakdown, periodBreakdown, dateRangeBreakdown]);
 
-  /* Tendance hebdomadaire du KPI sélectionné, sur la période et le(s) manager(s) filtrés — alimente le graphique dynamique */
+  /* Tendance du KPI sélectionné, sur la période et le(s) manager(s) filtrés — alimente le graphique dynamique.
+     La granularité (jour vs semaine) s'adapte au filtre actif (voir computeKpiTrend). */
   const kpiTrend = useMemo(
-    () => computeKpiWeeklyTrend(ecarts, allEvaluations, kpiFilter, fManager, roster, granBreakdown === "plage" ? dateRangeBreakdown : null),
-    [ecarts, allEvaluations, kpiFilter, fManager, roster, granBreakdown, dateRangeBreakdown]
+    () => computeKpiTrend(ecarts, allEvaluations, kpiFilter, fManager, roster, { granBreakdown, periodBreakdown, dateRange: dateRangeBreakdown }),
+    [ecarts, allEvaluations, kpiFilter, fManager, roster, granBreakdown, periodBreakdown, dateRangeBreakdown]
   );
 
   const conseillerBreakdownAll = useMemo(
@@ -1392,16 +1460,22 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
           allowRange={true} dateRange={dateRangeBreakdown} setDateRange={setDateRangeBreakdown}
         />
 
-        {kpiTrend.length > 1 && (
+        {kpiTrend.length > 0 && (
           <div className="card" style={{marginBottom:16}}>
             <div style={{fontSize:13, fontWeight:600, color:"var(--purpleDark)", marginBottom:10}}>
               Évolution de {kpiFilter} sur la période sélectionnée{fManager.length > 0 ? ` — ${fManager.join(", ")}` : ""}
             </div>
-            <LineChartMulti
-              data={kpiTrend.map((t) => ({ semaine: t.semaine, [kpiFilter]: kpiFilter.includes("NCC") ? t.score*10 : t.score }))}
-              series={[{ key: kpiFilter, color: SERIES_COLORS[INDICATEURS.indexOf(kpiFilter)] || "var(--purple)" }]}
-              xKey="semaine"
-            />
+            {kpiTrend.length > 1 ? (
+              <LineChartMulti
+                data={kpiTrend.map((t) => ({ x: t.label, [kpiFilter]: kpiFilter.includes("NCC") ? t.score*10 : t.score }))}
+                series={[{ key: kpiFilter, color: SERIES_COLORS[INDICATEURS.indexOf(kpiFilter)] || "var(--purple)" }]}
+                xKey="x"
+              />
+            ) : (
+              <div style={{fontSize:13, color:"var(--textMuted)"}}>
+                Un seul point sur cette période ({kpiTrend[0].label} : {kpiFilter.includes("NCC") ? kpiTrend[0].score+"/10" : kpiTrend[0].score+"%"}) — élargis la période pour voir une évolution.
+              </div>
+            )}
           </div>
         )}
 
@@ -1557,7 +1631,7 @@ function EcartDetailPanel({ e, onSave, onDelete, roster }) {
   );
 }
 
-function DebriefingView({ ecarts, setEcarts, weekly, onSaveNow, roster }) {
+function DebriefingView({ ecarts, setEcarts, weekly, onSaveNow, roster, allEvaluations }) {
   const [search, setSearch] = useState("");
   const [fInd, setFInd] = useState("Tous");
   const [fMgr, setFMgr] = useState([]);
@@ -1566,6 +1640,21 @@ function DebriefingView({ ecarts, setEcarts, weekly, onSaveNow, roster }) {
   const [periodValue, setPeriodValue] = useState([]);
   const [expanded, setExpanded] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
+  const [showAutoDetected, setShowAutoDetected] = useState(true);
+
+  const autoDetected = useMemo(() => computeAutoDetectedEcarts(allEvaluations, ecarts, roster), [allEvaluations, ecarts, roster]);
+
+  async function promoteAutoDetected(item){
+    const nextId = ecarts.reduce((max, e) => Math.max(max, Number(e.id) || 0), 0) + 1;
+    const promoted = {
+      id: nextId, indicateur: item.indicateur, conseiller: item.conseiller, reference: "",
+      semaine: item.semaine, date: item.date, ecart: item.ecart, statut: "À traiter", action: "",
+      dateDebrief: "", constat: "", managerDispatch: item.managerDispatch, manager: item.manager, alerte: "",
+    };
+    const updated = [...ecarts, promoted];
+    setEcarts(updated);
+    if (onSaveNow) await onSaveNow(updated, weekly);
+  }
 
   const weekOptions = useMemo(() => {
     const set = new Set(ecarts.map((e) => extractWeekCode(e.semaine)).filter(Boolean));
@@ -1616,6 +1705,40 @@ function DebriefingView({ ecarts, setEcarts, weekly, onSaveNow, roster }) {
   return (
     <div>
       <SectionTitle icon="📋">Suivi des débriefings managers</SectionTitle>
+
+      {autoDetected.length > 0 && (
+        <div className="card" style={{marginBottom:16, borderLeft:"4px solid var(--amber)"}}>
+          <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", cursor:"pointer"}} onClick={() => setShowAutoDetected((v) => !v)}>
+            <div style={{fontWeight:600, fontSize:14, color:"var(--amber)"}}>
+              ⚠ {autoDetected.length} écart(s) détecté(s) automatiquement — pas encore dans le Suivi débriefing
+            </div>
+            <span>{showAutoDetected ? "▴" : "▾"}</span>
+          </div>
+          <div style={{fontSize:12, color:"var(--textMuted)", marginTop:4}}>
+            Calculés directement depuis les évaluations brutes des 14 derniers jours (score sous objectif, ou statut KO) — pas encore saisis/dispatchés manuellement dans ce fichier de suivi.
+          </div>
+          {showAutoDetected && (
+            <div style={{overflowX:"auto", marginTop:12}}>
+              <table>
+                <thead><tr>{["Indicateur","Conseiller","Date","Écart constaté","Manager",""].map((h) => <th key={h}>{h}</th>)}</tr></thead>
+                <tbody>
+                  {autoDetected.slice(0,200).map((a) => (
+                    <tr key={a.id}>
+                      <td>{a.indicateur}</td>
+                      <td>{a.conseiller}</td>
+                      <td style={{whiteSpace:"nowrap"}}>{a.date || "—"}</td>
+                      <td>{a.ecart}</td>
+                      <td>{a.manager}</td>
+                      <td><button className="btn" style={{padding:"2px 8px", fontSize:12}} onClick={() => promoteAutoDetected(a)}>+ Ajouter au suivi</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {autoDetected.length > 200 && <div style={{fontSize:12, color:"var(--textMuted)", marginTop:6}}>Affichage limité aux 200 plus récents ({autoDetected.length} au total).</div>}
+            </div>
+          )}
+        </div>
+      )}
 
       <PeriodFilter
         granularity={granularity} setGranularity={setGranularity}
@@ -2627,9 +2750,9 @@ function App(){
       </div>
 
       <div className="wrap content">
-        {tab === "reporting" && <ReportingView ecarts={ecarts} weekly={weekly} roster={roster} />}
+        {tab === "reporting" && <ReportingView ecarts={ecarts} weekly={weekly} roster={roster} allEvaluations={allEvaluations} />}
         {tab === "performance" && <PerformanceView ecarts={ecarts} weekly={weekly} roster={roster} allEvaluations={allEvaluations} />}
-        {tab === "debriefing" && <DebriefingView ecarts={ecarts} setEcarts={setEcarts} weekly={weekly} onSaveNow={saveNow} roster={roster} />}
+        {tab === "debriefing" && <DebriefingView ecarts={ecarts} setEcarts={setEcarts} weekly={weekly} onSaveNow={saveNow} roster={roster} allEvaluations={allEvaluations} />}
         {tab === "roster" && auth.role === "admin" && <RosterView roster={roster} setRoster={setRoster} />}
         {tab === "nps" && <NPSView nccResponses={nccResponses} roster={roster} />}
         {tab === "import" && auth.role === "admin" && <ImportView ecarts={ecarts} setEcarts={setEcarts} onImportJSON={importFromJSON} roster={roster} setRoster={setRoster} nccResponses={nccResponses} setNccResponses={setNccResponses} allEvaluations={allEvaluations} setAllEvaluations={setAllEvaluations} />}

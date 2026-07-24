@@ -1172,14 +1172,17 @@ function extractWeekNum(code){
    La granularité de regroupement (jour vs semaine) s'adapte au filtre actif, pour que les périodes
    courtes (2-3 jours) affichent bien plusieurs points au lieu d'être noyées dans un seul point hebdomadaire. */
 function computeKpiTrend(ecarts, allEvaluations, kpi, managers, roster, periodCtx){
-  const { granBreakdown="tous", periodBreakdown=[], dateRange=null } = periodCtx || {};
+  const { granBreakdown="tous", periodBreakdown=[], dateRange=null, bucketBy=null, conseiller="Tous" } = periodCtx || {};
   const evalsForKpi = (allEvaluations || []).filter((ev) => ev.indicateur === kpi);
   const hasRawData = evalsForKpi.length > 0;
   const isNumericKpi = kpi === "Hubicus Voix" || kpi === "Hubicus Mail" || kpi.includes("NCC");
-  const byDay = granBreakdown === "jour" || granBreakdown === "plage";
+  // La granularité d'affichage (bucketBy) est indépendante du filtre de période : si non précisée,
+  // elle suit par défaut le filtre (jour/plage -> jour, sinon semaine).
+  const effectiveBucket = bucketBy || (granBreakdown === "jour" || granBreakdown === "plage" ? "jour" : "semaine");
   const bucket = {};
 
-  function inManagerScope(conseillerFull){
+  function inScope(conseillerFull){
+    if (conseiller !== "Tous" && displayConseillerName(conseillerFull) !== conseiller) return false;
     if (!managers || managers.length === 0) return true;
     return managers.includes(getConseillerManagerFromRoster(conseillerFull, roster));
   }
@@ -1192,7 +1195,9 @@ function computeKpiTrend(ecarts, allEvaluations, kpi, managers, roster, periodCt
     return true;
   }
   function bucketKey(dateStr, semaineStr){
-    return byDay ? dateStr : extractWeekCode(semaineStr);
+    if (effectiveBucket === "jour") return dateStr;
+    if (effectiveBucket === "mois") return weekToMonth(semaineStr);
+    return extractWeekCode(semaineStr);
   }
   function ensure(key){
     if (!bucket[key]) bucket[key] = { key, sum:0, count:0, ok:0, total:0 };
@@ -1201,7 +1206,7 @@ function computeKpiTrend(ecarts, allEvaluations, kpi, managers, roster, periodCt
 
   if (hasRawData) {
     evalsForKpi.forEach((ev) => {
-      if (!inManagerScope(ev.conseiller)) return;
+      if (!inScope(ev.conseiller)) return;
       if (!inPeriod(ev.date, ev.semaine)) return;
       const key = bucketKey(ev.date, ev.semaine);
       if (!key) return;
@@ -1214,6 +1219,7 @@ function computeKpiTrend(ecarts, allEvaluations, kpi, managers, roster, periodCt
     });
   } else {
     ecarts.filter((e) => e.indicateur === kpi).forEach((e) => {
+      if (conseiller !== "Tous" && displayConseillerName(e.conseiller) !== conseiller) return;
       if (managers && managers.length > 0 && !managers.includes(getEffectiveManager(e, roster))) return;
       if (!inPeriod(e.date, e.semaine)) return;
       const key = bucketKey(e.date, e.semaine);
@@ -1228,7 +1234,9 @@ function computeKpiTrend(ecarts, allEvaluations, kpi, managers, roster, periodCt
   const rows = Object.values(bucket)
     .map((b) => ({ label: b.key, score: isNumericKpi ? (b.count ? Math.round((b.sum/b.count)*10)/10 : null) : (b.total ? Math.round((b.ok/b.total)*1000)/10 : null) }))
     .filter((b) => b.score !== null);
-  return byDay ? rows.sort((a,b) => a.label.localeCompare(b.label)) : rows.sort((a,b) => extractWeekNum(a.label) - extractWeekNum(b.label));
+  if (effectiveBucket === "jour") return rows.sort((a,b) => a.label.localeCompare(b.label));
+  if (effectiveBucket === "mois") return rows.sort((a,b) => MONTH_ORDER.indexOf(a.label) - MONTH_ORDER.indexOf(b.label));
+  return rows.sort((a,b) => extractWeekNum(a.label) - extractWeekNum(b.label));
 }
 
 /* Même logique que computeKpiTrend mais pour plusieurs indicateurs à la fois (graphique multi-séries
@@ -1241,8 +1249,12 @@ function computeMultiKpiTrend(ecarts, allEvaluations, kpis, managers, roster, pe
       byLabel[t.label][kpi] = kpi.includes("NCC") ? Math.round(t.score*100)/10 : t.score;
     });
   });
-  const byDay = (periodCtx && (periodCtx.granBreakdown === "jour" || periodCtx.granBreakdown === "plage"));
-  return Object.values(byLabel).sort((a,b) => byDay ? a.label.localeCompare(b.label) : extractWeekNum(a.label) - extractWeekNum(b.label));
+  const bucketBy = periodCtx && periodCtx.bucketBy;
+  const effectiveBucket = bucketBy || (periodCtx && (periodCtx.granBreakdown === "jour" || periodCtx.granBreakdown === "plage") ? "jour" : "semaine");
+  const rows = Object.values(byLabel);
+  if (effectiveBucket === "jour") return rows.sort((a,b) => a.label.localeCompare(b.label));
+  if (effectiveBucket === "mois") return rows.sort((a,b) => MONTH_ORDER.indexOf(a.label) - MONTH_ORDER.indexOf(b.label));
+  return rows.sort((a,b) => extractWeekNum(a.label) - extractWeekNum(b.label));
 }
 
 /* ============================================================
@@ -1252,6 +1264,8 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
   const [granularity, setGranularity] = useState("semaine");
   const [periodTop, setPeriodTop] = useState([]);
   const [dateRangeTop, setDateRangeTop] = useState({ start:"", end:"" });
+  const [displayGranularity, setDisplayGranularity] = useState("semaine");
+  const [fConseillerTop, setFConseillerTop] = useState("Tous");
   const [visibleIndicators, setVisibleIndicators] = useState(() => new Set(INDICATEURS));
   const [fManager, setFManager] = useState([]);
   const [fConseiller, setFConseiller] = useState("Tous");
@@ -1331,8 +1345,8 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
   /* Tendance multi-indicateurs pour le graphique "Évolution des résultats" en haut de la vue —
      dynamique selon la granularité (jour/semaine/mois), la période choisie et le(s) manager(s). */
   const topTrend = useMemo(
-    () => computeMultiKpiTrend(ecarts, allEvaluations, [...visibleIndicators], fManager, roster, { granBreakdown: granularity, periodBreakdown: periodTop, dateRange: dateRangeTop }),
-    [ecarts, allEvaluations, visibleIndicators, fManager, roster, granularity, periodTop, dateRangeTop]
+    () => computeMultiKpiTrend(ecarts, allEvaluations, [...visibleIndicators], fManager, roster, { granBreakdown: granularity, periodBreakdown: periodTop, dateRange: dateRangeTop, bucketBy: displayGranularity, conseiller: fConseillerTop }),
+    [ecarts, allEvaluations, visibleIndicators, fManager, roster, granularity, periodTop, dateRangeTop, displayGranularity, fConseillerTop]
   );
 
   /* Tendance du KPI sélectionné, sur la période et le(s) manager(s) filtrés — alimente le graphique dynamique.
@@ -1401,31 +1415,46 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
       </div>
 
       <div className="filters" style={{marginBottom:16}}>
-        <MultiSelectDropdown label="Manager :" options={managerOptions} selected={fManager} setSelected={(v) => { setFManager(v); setFConseiller("Tous"); }} />
+        <MultiSelectDropdown label="Manager :" options={managerOptions} selected={fManager} setSelected={(v) => { setFManager(v); setFConseiller("Tous"); setFConseillerTop("Tous"); }} />
+        <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600, marginLeft:8}}>Conseiller :</span>
+        <select value={fConseillerTop} onChange={(e) => setFConseillerTop(e.target.value)}>
+          <option>Tous</option>
+          {conseillerOptions.map((c) => <option key={c}>{c}</option>)}
+        </select>
+      </div>
+
+      <div className="filters" style={{marginBottom:16}}>
+        <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600}}>Granularité à afficher :</span>
+        {[{id:"jour",label:"Jour"},{id:"semaine",label:"Semaine"},{id:"mois",label:"Mois"}].map((g) => (
+          <button
+            key={g.id}
+            className="btn"
+            style={displayGranularity === g.id ? { background:"var(--purple)", color:"#fff", borderColor:"var(--purple)" } : {}}
+            onClick={() => setDisplayGranularity(g.id)}
+          >
+            {g.label}
+          </button>
+        ))}
+        <span style={{fontSize:11, color:"var(--textMuted)"}}>
+          (regroupement du graphique — indépendant du filtre de période ci-dessus, qui peut combiner mois/semaine/jour via le filtre Plage)
+        </span>
       </div>
 
       <div className="card">
         <div style={{fontSize:13, fontWeight:600, color:"var(--purpleDark)", marginBottom:10}}>
-          Évolution des résultats {granularity==="jour" ? "par jour" : granularity==="mois" ? "par mois" : granularity==="plage" ? "sur la plage sélectionnée" : "par semaine"}
-          {fManager.length > 0 ? ` — ${fManager.join(", ")}` : ""}
+          Évolution des résultats {displayGranularity==="jour" ? "par jour" : displayGranularity==="mois" ? "par mois" : "par semaine"}
+          {fManager.length > 0 ? ` — ${fManager.join(", ")}` : ""}{fConseillerTop !== "Tous" ? ` — ${fConseillerTop}` : ""}
         </div>
         {topTrend.length > 1 ? (
           <LineChartMulti data={topTrend} series={series} xKey="label" />
         ) : (
           <p style={{fontSize:13, color:"var(--textMuted)"}}>
             {topTrend.length === 1
-              ? "Un seul point sur cette période — élargis le filtre pour voir une évolution."
+              ? "Un seul point sur cette période — élargis le filtre ou change la granularité d'affichage pour voir une évolution."
               : "Aucune donnée exploitable pour les indicateurs et la période sélectionnés."}
           </p>
         )}
-        {granularity === "jour" && (
-          <div className="notice info" style={{marginTop:14}}>
-            <span className="ic">ℹ</span>
-            <div>Vue par jour : taux de conformité calculé sur les évaluations complètes du jour quand elles sont disponibles ;
-            à défaut, sur les seuls écarts déjà enregistrés pour ce jour.</div>
-          </div>
-        )}
-        {granularity === "mois" && (
+        {displayGranularity === "mois" && (
           <div className="notice info" style={{marginTop:14}}>
             <span className="ic">ℹ</span>
             <div>Chaque point mensuel est la moyenne des semaines disponibles sur ce mois. Un indicateur sans donnée sur tout le mois n'apparaît pas.</div>

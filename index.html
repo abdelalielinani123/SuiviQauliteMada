@@ -192,6 +192,8 @@ const STORAGE_KEY_WEEKLY = "tersea_dashboard_weekly";
 const STORAGE_KEY_ROSTER = "tersea_dashboard_roster";
 const STORAGE_KEY_NCC_RESPONSES = "tersea_dashboard_ncc_responses";
 const STORAGE_KEY_ALL_EVALUATIONS = "tersea_dashboard_all_evaluations";
+const STORAGE_KEY_PLAN_ACTIONS = "tersea_dashboard_plan_actions";
+const STORAGE_KEY_CRITERES_ECARTS = "tersea_dashboard_criteres_ecarts";
 const NOUVEAU_ANCIEN_SEUIL_JOURS = 90; // en dessous de ce seuil (date d'entrée en prod), un conseiller est considéré "Nouveau"
 
 /* ============================================================
@@ -697,12 +699,13 @@ function exportExcel(ecarts, weekly, roster){
   XLSX.utils.book_append_sheet(wb, ws3, "Historique KPI");
   XLSX.writeFile(wb, "Suivi_Debriefing_Manager.xlsx");
 }
-function exportForClaude(ecarts, weekly, roster, nccResponses, allEvaluations){
+function exportForClaude(ecarts, weekly, roster, nccResponses, allEvaluations, planActions, criteresEcarts){
   const payload = {
     genere_le: new Date().toISOString(),
     note: "Coller ce JSON dans une conversation Claude avec la consigne 'mets à jour le PowerPoint et l'Excel qualité avec ces données' pour régénérer les supports.",
     ecarts, historique_kpi: weekly, repartition_equipes: roster || [],
     ncc_responses: nccResponses || [], toutes_evaluations: allEvaluations || [],
+    plan_actions: planActions || [], criteres_ecarts: criteresEcarts || [],
   };
   downloadBlob(JSON.stringify(payload, null, 2), "export_pour_claude.json", "application/json");
 }
@@ -2417,7 +2420,7 @@ function ImportView({ ecarts, setEcarts, onImportJSON, roster, setRoster, nccRes
 /* ============================================================
    VUE : EXTRACTIONS / EXPORT
    ============================================================ */
-function ExportView({ ecarts, weekly, roster, nccResponses, allEvaluations }) {
+function ExportView({ ecarts, weekly, roster, nccResponses, allEvaluations, planActions, criteresEcarts }) {
   const [fMgr, setFMgr] = useState("Tous");
   const [fInd, setFInd] = useState("Tous");
   const [fStat, setFStat] = useState("Tous");
@@ -2468,7 +2471,7 @@ function ExportView({ ecarts, weekly, roster, nccResponses, allEvaluations }) {
       <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))", gap:12, marginBottom:16}}>
         <button className="btn primary" onClick={exportSelection}>⬇ Exporter la sélection (CSV)</button>
         <button className="btn outline" onClick={() => exportExcel(ecarts, weekly, roster)}>📊 Générer le fichier Excel complet</button>
-        <button className="btn" onClick={() => exportForClaude(ecarts, weekly, roster, nccResponses, allEvaluations)}>⧉ Export pour régénérer le PowerPoint</button>
+        <button className="btn" onClick={() => exportForClaude(ecarts, weekly, roster, nccResponses, allEvaluations, planActions, criteresEcarts)}>⧉ Export pour régénérer le PowerPoint</button>
       </div>
 
       <div className="notice warn">
@@ -2517,6 +2520,555 @@ function LoginScreen({ onLogin }){
   );
 }
 
+/* ============================================================
+   Fonctions partagées — vues Analyse & Plan d'action
+   ============================================================ */
+
+/* Score global "réalisé" pour un indicateur, toutes évaluations confondues (aucun filtre manager/période). */
+function computeGlobalKpiRealise(ecarts, allEvaluations, kpi){
+  const evalsForKpi = (allEvaluations || []).filter((ev) => ev.indicateur === kpi);
+  const isNumeric = kpi === "Hubicus Voix" || kpi === "Hubicus Mail" || kpi.includes("NCC");
+  if (evalsForKpi.length > 0) {
+    if (isNumeric) {
+      const scored = evalsForKpi.filter((e) => e.score !== null && e.score !== undefined && e.score !== "");
+      return scored.length ? Math.round((scored.reduce((s,e) => s+Number(e.score), 0)/scored.length)*10)/10 : null;
+    }
+    const withStatut = evalsForKpi.filter((e) => ["OK","KO","SI"].includes(e.statut));
+    const ok = withStatut.filter((e) => e.statut === "OK").length;
+    return withStatut.length ? Math.round((ok/withStatut.length)*1000)/10 : null;
+  }
+  const rel = ecarts.filter((e) => e.indicateur === kpi).map(parseScoreFromEcart).filter(Boolean);
+  return rel.length ? Math.round((rel.reduce((s,p) => s+p.value, 0)/rel.length)*10)/10 : null;
+}
+
+/* Résultat "post-coaching" d'une action : moyenne/taux calculé automatiquement sur les évaluations
+   postérieures à l'échéance, pour le conseiller ciblé (ou toute l'équipe). Se met à jour tout seul
+   au fil des extractions injectées — aucune saisie manuelle. */
+function computeResultatPostCoaching(action, allEvaluations){
+  if (!action.echeance) return null;
+  const evalsForKpi = (allEvaluations || []).filter((ev) => ev.indicateur === action.indicateur && ev.date && ev.date > action.echeance);
+  const scoped = (action.conseillerCible && action.conseillerCible !== "Toute l'équipe")
+    ? evalsForKpi.filter((ev) => displayConseillerName(ev.conseiller) === action.conseillerCible)
+    : evalsForKpi;
+  if (scoped.length === 0) return null;
+  const isNumeric = action.indicateur === "Hubicus Voix" || action.indicateur === "Hubicus Mail" || action.indicateur.includes("NCC");
+  if (isNumeric) {
+    const scored = scoped.filter((e) => e.score !== null && e.score !== undefined && e.score !== "");
+    return scored.length ? { value: Math.round((scored.reduce((s,e) => s+Number(e.score), 0)/scored.length)*10)/10, nb: scored.length } : null;
+  }
+  const withStatut = scoped.filter((e) => ["OK","KO","SI"].includes(e.statut));
+  const ok = withStatut.filter((e) => e.statut === "OK").length;
+  return withStatut.length ? { value: Math.round((ok/withStatut.length)*1000)/10, nb: withStatut.length } : null;
+}
+
+function formatKpiValue(kpi, v){
+  if (v === null || v === undefined) return "—";
+  return kpi.includes("NCC") ? `${v}/10` : `${v}%`;
+}
+
+const MOIS_FR = {"01":"Janvier","02":"Février","03":"Mars","04":"Avril","05":"Mai","06":"Juin","07":"Juillet","08":"Août","09":"Septembre","10":"Octobre","11":"Novembre","12":"Décembre"};
+/* Clé "AAAA-MM" -> libellé français, dérivé directement de la date (plus fiable que la correspondance semaine -> mois). */
+function monthKeyFromDate(dateStr){
+  if (!dateStr || dateStr.length < 7) return null;
+  return dateStr.slice(0,7);
+}
+function monthLabelFromKey(key){
+  const [y, m] = key.split("-");
+  return `${MOIS_FR[m] || m} ${y}`;
+}
+/* Liste des mois disponibles (clé + libellé), triée chronologiquement, à partir de tous les jeux de données fournis. */
+function computeAvailableMonths(...datasets){
+  const keys = new Set();
+  datasets.forEach((arr) => (arr || []).forEach((item) => {
+    const k = monthKeyFromDate(item.date);
+    if (k) keys.add(k);
+  }));
+  return [...keys].sort().map((k) => ({ key: k, label: monthLabelFromKey(k) }));
+}
+
+/* Suggestions d'action corrective par item de grille qualité — proposition de base à ajuster si besoin. */
+const CORRECTIVE_ACTIONS_LIB = {
+  "Reformulation": "Reprendre la technique de reformulation en double-écoute : reformuler systématiquement la demande du client avant d'y répondre.",
+  "Questionnement": "Travailler les questions ouvertes/fermées en jeu de rôle pour mieux cerner le besoin client dès le début de l'appel.",
+  "Climat d'appel (Amabilité/courtoisie/sourire)": "Coaching sur le sourire au téléphone et le ton chaleureux, avec réécoute d'appels modèles.",
+  "Maitrise de l'entretien (directivité)": "Renforcer la prise de leadership sur l'appel : structurer l'échange et guider le client étape par étape.",
+  "Prise de congés": "Rappeler la check-list de fin d'appel (nom du client, récapitulatif, formule de politesse) avant chaque clôture.",
+  "Prise de congé": "Rappeler la formule de prise de congé standard en fin d'email.",
+  "Ecoute active/Implication/Présence du conseiller": "Sensibiliser à l'écoute active (reformulation, relances, silence actif) via des mises en situation.",
+  "Personnalisation en cours d'appel": "Encourager l'usage du prénom/nom du client et la personnalisation du discours tout au long de l'appel.",
+  "Identification du client": "Rappeler la procédure d'identification complète du client en début d'appel.",
+  "Traitement des objections": "Travailler les techniques de traitement des objections (méthode CRAC) en atelier pratique.",
+  "Explication(s) claire(s) et adapté(es)": "Travailler la clarté du discours et l'adaptation du niveau de langage au profil du client.",
+  "Voix / Intonation / Débit": "Coaching sur le débit de parole et l'intonation pour un discours plus dynamique et posé.",
+  "Mise en valeur de la marque": "Rappeler les éléments clés de valorisation de la marque Auchan à intégrer dans le discours.",
+  "Allié Client": "Renforcer la posture de conseil (allié client) plutôt qu'une posture uniquement transactionnelle.",
+  "Allié client": "Renforcer la posture de conseil dans les réponses écrites.",
+  "Discours rassurant et vocabulaire adapté": "Travailler un discours rassurant, avec un vocabulaire simple et positif.",
+  "Mise et reprise de garde annoncées": "Rappeler la nécessité d'annoncer systématiquement toute mise en attente et sa reprise.",
+  "Temps d'attente": "Sensibiliser à la gestion du temps d'attente client (fréquence des points d'étape).",
+  "Cadre de traitement et transfert": "Rappeler les règles de transfert (bon interlocuteur, contexte transmis) avant tout transfert d'appel.",
+  "Suivi et Relance": "Renforcer la rigueur sur le suivi et la relance client après traitement de la demande.",
+  "Respect des process": "Reprendre les processus métier applicables à la typologie de demande concernée.",
+  "Qualification de contact": "Rappeler les règles de qualification du contact en fin de traitement.",
+  "Synthèse": "Travailler la synthèse de fin d'appel (récapitulatif clair des points traités et actions à venir).",
+  "Fiabilisation": "Rappeler l'importance de la fiabilisation des informations client (coordonnées, dossier) en cours d'appel.",
+  "Présentation Auchan (Magasin ou drive) & Démonstration de la disponibilité au client": "Reprendre le script de présentation Auchan et la démonstration de disponibilité en début d'appel.",
+  "Prise en charge de la demande et de l'émotion du client": "Coaching sur la prise en charge de l'émotion client (écoute empathique avant traitement de la demande).",
+  "Objet de l'email": "Rappeler les règles de rédaction de l'objet de l'email (clair, synthétique, identifiable).",
+  "Accueil": "Reprendre la formule d'accueil standard en début de réponse email.",
+  "Identification de la demande et Reformulation": "Travailler la reformulation écrite de la demande client avant d'y répondre.",
+  "Réponse": "Renforcer la structure et la complétude de la réponse apportée à la demande.",
+  "Discours et ton employé": "Travailler le ton employé dans les réponses écrites (chaleureux, professionnel).",
+  "Remerciement": "Rappeler la formule de remerciement/clôture standard en fin d'email.",
+  "Disponibilité": "Reprendre la formulation de disponibilité produit/magasin dans la réponse.",
+  "Vocabulaire utilisé": "Travailler le choix du vocabulaire (clair, positif, adapté au client).",
+  "Orthographe et syntaxe": "Renforcer la vigilance orthographique (relecture systématique avant envoi).",
+  "Ponctuation": "Rappeler les règles de ponctuation de base pour une lecture plus fluide.",
+  "Mise en page": "Reprendre les standards de mise en page des emails (paragraphes, aération, lisibilité).",
+  "Process": "Reprendre avec le conseiller le processus métier applicable à la typologie de demande concernée, avec un cas pratique.",
+  "Suivi & Relance": "Rappeler l'obligation de suivi et de relance client après traitement de la demande, avec vérification des dossiers en cours.",
+  "Résolution client (+Efficacité/Adaptabilité)": "Coaching sur l'efficacité et l'adaptabilité dans la résolution de la demande client, avec étude de cas concrets.",
+  "Le client était-il convaincu ?": "Travailler l'argumentation et la posture de conviction en fin d'échange, pour s'assurer de l'adhésion du client.",
+  "Demande OK/KO": "Reprendre l'ensemble du traitement de la demande avec le conseiller pour identifier le ou les points de non-conformité.",
+  "Confomité": "Reprendre la procédure de transfert conforme (bon interlocuteur, contexte transmis, file d'attente adaptée) avec le conseiller.",
+  "Justification du transfert": "Rappeler les critères de justification d'un transfert avant de le réaliser, pour limiter les transferts non pertinents.",
+  "Bon interlocuteur": "Reprendre l'annuaire/les règles de routage pour s'assurer du bon interlocuteur avant tout transfert.",
+  "Complétude": "Rappeler l'exigence de transmission complète du contexte client lors d'un transfert (aucune information manquante).",
+};
+function suggestCorrectiveAction(item){
+  return CORRECTIVE_ACTIONS_LIB[item.trim()] || `Organiser un point de coaching individuel ciblé sur l'item "${item.trim()}", avec réécoute/relecture d'un cas concret et mise en pratique.`;
+}
+function addDaysISO(dateStr, days){
+  const d = new Date(dateStr);
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0,10);
+}
+
+/* ============================================================
+   VUE : ANALYSE (par indicateur)
+   ============================================================ */
+function AnalyseView({ ecarts, roster, allEvaluations, nccResponses, criteresEcarts }){
+  const isItemKpi = (k) => k === "Hubicus Voix" || k === "Hubicus Mail" || k === "Conformité Process (Auchan)" || k === "Conformité Process (Interne)" || k === "Conformité Transfert";
+  const availableMonths = useMemo(
+    () => computeAvailableMonths(allEvaluations, ecarts, nccResponses, criteresEcarts),
+    [allEvaluations, ecarts, nccResponses, criteresEcarts]
+  );
+  const defaultMonthKey = useMemo(() => {
+    const juillet = availableMonths.find((m) => m.key.endsWith("-07"));
+    return juillet ? juillet.key : (availableMonths[availableMonths.length-1]?.key || "");
+  }, [availableMonths]);
+
+  const [kpiFilter, setKpiFilter] = useState(INDICATEURS[0]);
+  const [moisKey, setMoisKey] = useState(defaultMonthKey);
+  useEffect(() => { if (!moisKey && defaultMonthKey) setMoisKey(defaultMonthKey); }, [defaultMonthKey]);
+  const isNcc = kpiFilter.includes("NCC");
+  const monthFilterFn = useMemo(() => (moisKey ? (ev) => monthKeyFromDate(ev.date) === moisKey : null), [moisKey]);
+
+  const ecartsForMonth = useMemo(() => moisKey ? ecarts.filter((e) => monthKeyFromDate(e.date) === moisKey) : ecarts, [ecarts, moisKey]);
+  const nccForMonth = useMemo(() => moisKey ? (nccResponses||[]).filter((r) => monthKeyFromDate(r.date) === moisKey) : (nccResponses||[]), [nccResponses, moisKey]);
+  const criteresForMonth = useMemo(
+    () => (criteresEcarts||[]).filter((c) => c.indicateur === kpiFilter && (!moisKey || monthKeyFromDate(c.date) === moisKey)),
+    [criteresEcarts, kpiFilter, moisKey]
+  );
+
+  const realise = useMemo(() => computeGlobalKpiRealise(ecartsForMonth, (allEvaluations||[]).filter((ev) => !moisKey || monthKeyFromDate(ev.date) === moisKey), kpiFilter), [ecartsForMonth, allEvaluations, kpiFilter, moisKey]);
+  const objectif = OBJECTIFS[kpiFilter];
+  const enEcart = realise !== null && realise < objectif;
+
+  const conseillerBreakdown = useMemo(
+    () => computeConseillerScoreBreakdown(ecartsForMonth, roster, kpiFilter, allEvaluations, monthFilterFn),
+    [ecartsForMonth, roster, kpiFilter, allEvaluations, monthFilterFn]
+  );
+  const ccsEnEcart = useMemo(() => conseillerBreakdown
+    .filter((c) => c.hasRawData ? (c.avgScore !== null && c.avgScore < objectif) : c.total > 0)
+    .sort((a,b) => (a.avgScore ?? 999) - (b.avgScore ?? 999)), [conseillerBreakdown, objectif]);
+
+  // Décomposition par item de grille qualité (Hubicus Voix/Mail uniquement — seul indicateur avec
+  // un détail par critère disponible dans les fichiers source).
+  const itemsBreakdown = useMemo(() => {
+    if (!isItemKpi(kpiFilter)) return [];
+    const byItem = {};
+    criteresForMonth.forEach((c) => {
+      if (!byItem[c.item]) byItem[c.item] = { item: c.item, count: 0, remarques: {}, ccs: {} };
+      const b = byItem[c.item];
+      b.count += 1;
+      b.remarques[c.remarque] = (b.remarques[c.remarque] || 0) + 1;
+      const cName = displayConseillerName(c.conseiller);
+      if (!b.ccs[cName]) b.ccs[cName] = { conseiller: cName, manager: getConseillerManagerFromRoster(c.conseiller, roster) || "Non trouvé", count: 0 };
+      b.ccs[cName].count += 1;
+    });
+    return Object.values(byItem).map((b) => ({
+      item: b.item, count: b.count,
+      remarques: Object.entries(b.remarques).sort((a,b2) => b2[1]-a[1]).slice(0,5).map(([texte, n]) => ({ texte, n })),
+      ccs: Object.values(b.ccs).sort((a,b2) => b2.count - a.count),
+    })).sort((a,b) => b.count - a.count);
+  }, [criteresForMonth, kpiFilter, roster]);
+
+  // NCC : motif structuré disponible directement dans les réponses de satisfaction.
+  const causesNcc = useMemo(() => {
+    if (!isNcc) return [];
+    const bad = nccForMonth.filter((r) => (r.scoreNCC !== null && r.scoreNCC <= 7) || (r.scoreNPS !== null && r.scoreNPS <= 7));
+    const byMotif = {};
+    bad.forEach((r) => {
+      const m = (r.motif || "").trim() || "Motif non renseigné";
+      if (!byMotif[m]) byMotif[m] = { motif: m, count: 0, exemples: [] };
+      byMotif[m].count += 1;
+      if (byMotif[m].exemples.length < 3 && r.verbatim) byMotif[m].exemples.push({ conseiller: r.conseiller, verbatim: r.verbatim });
+    });
+    return Object.values(byMotif).sort((a,b) => b.count - a.count);
+  }, [isNcc, nccForMonth]);
+
+  const remarquesEvaluateur = useMemo(() => {
+    if (isNcc || isItemKpi(kpiFilter)) return [];
+    return ecartsForMonth
+      .filter((e) => e.indicateur === kpiFilter && e.constat)
+      .sort((a,b) => (b.date || "").localeCompare(a.date || ""))
+      .slice(0, 100);
+  }, [ecartsForMonth, kpiFilter, isNcc]);
+
+  return (
+    <div>
+      <SectionTitle icon="🔍">Analyse par indicateur</SectionTitle>
+
+      <div className="filters" style={{marginBottom:16}}>
+        <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600}}>Indicateur :</span>
+        <select value={kpiFilter} onChange={(e) => setKpiFilter(e.target.value)}>
+          {INDICATEURS.map((k) => <option key={k}>{k}</option>)}
+        </select>
+        <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600, marginLeft:8}}>Mois de référence :</span>
+        <select value={moisKey} onChange={(e) => setMoisKey(e.target.value)}>
+          {availableMonths.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
+        </select>
+      </div>
+
+      <div className="stat-row" style={{display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:16, marginBottom:20}}>
+        <StatCard label="Réalisé" value={formatKpiValue(kpiFilter, realise)} tone={enEcart ? "bad" : "good"} />
+        <StatCard label="Objectif" value={formatKpiValue(kpiFilter, objectif)} tone="neutral" />
+        <StatCard label="Conseillers en écart" value={ccsEnEcart.length} tone={ccsEnEcart.length>0 ? "bad" : "good"} sub={`sur ${conseillerBreakdown.length} suivis`} />
+      </div>
+
+      {isItemKpi(kpiFilter) ? (
+        <div className="card" style={{marginBottom:20}}>
+          <div style={{fontSize:13, fontWeight:600, color:"var(--purpleDark)", marginBottom:12}}>
+            Causes de non-performance par item ({monthLabelFromKey(moisKey||defaultMonthKey||"")})
+          </div>
+          {itemsBreakdown.length === 0 ? <p style={{fontSize:13, color:"var(--textMuted)"}}>Aucun écart par item sur ce mois.</p> : (
+            <div style={{display:"flex", flexDirection:"column", gap:16}}>
+              {itemsBreakdown.map((it) => (
+                <div key={it.item} style={{borderLeft:"3px solid var(--red)", paddingLeft:12}}>
+                  <div style={{fontWeight:600, fontSize:13, marginBottom:4}}>{it.item} — {it.count} écart(s)</div>
+                  <div style={{fontSize:12, color:"var(--textMuted)", marginBottom:6}}>
+                    {it.remarques.map((r) => `${r.texte} (${r.n})`).join(" · ")}
+                  </div>
+                  <details>
+                    <summary style={{fontSize:12, color:"var(--purple)", cursor:"pointer"}}>Conseillers en écart sur cet item ({it.ccs.length})</summary>
+                    <div style={{marginTop:6, display:"flex", flexWrap:"wrap", gap:6}}>
+                      {it.ccs.map((c) => (
+                        <span key={c.conseiller} className="badge" style={{background:"var(--redSoft)", color:"var(--red)"}}>
+                          {c.conseiller} ({c.manager}) — {c.count}
+                        </span>
+                      ))}
+                    </div>
+                  </details>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="card" style={{marginBottom:20}}>
+          <div style={{fontSize:13, fontWeight:600, color:"var(--purpleDark)", marginBottom:12}}>
+            {isNcc ? "Causes de non-performance (motifs d'insatisfaction)" : "Remarques des évaluateurs (constats)"}
+          </div>
+          {isNcc ? (
+            causesNcc.length === 0 ? <p style={{fontSize:13, color:"var(--textMuted)"}}>Aucune insatisfaction (NCC/NPS ≤ 7) sur ce mois.</p> : (
+              <div style={{display:"flex", flexDirection:"column", gap:12}}>
+                {causesNcc.map((c) => (
+                  <div key={c.motif} style={{borderLeft:"3px solid var(--red)", paddingLeft:12}}>
+                    <div style={{fontWeight:600, fontSize:13}}>{c.motif} — {c.count} cas</div>
+                    {c.exemples.map((ex, i) => (
+                      <div key={i} style={{fontSize:12, color:"var(--textMuted)", marginTop:4}}>« {ex.verbatim} » — {ex.conseiller}</div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            )
+          ) : (
+            <>
+              <div className="notice info" style={{marginBottom:12}}>
+                <span className="ic">ℹ</span>
+                <div>Cet indicateur n'a pas de décomposition par item disponible dans les fichiers source —
+                voici la synthèse des constats détaillés saisis par les évaluateurs lors du débriefing, les plus récents en premier.</div>
+              </div>
+              {remarquesEvaluateur.length === 0 ? <p style={{fontSize:13, color:"var(--textMuted)"}}>Aucun constat disponible pour cet indicateur sur ce mois.</p> : (
+                <div style={{overflowX:"auto"}}>
+                  <table>
+                    <thead><tr>{["Conseiller","Date","Écart constaté","Constat de l'évaluateur"].map((h) => <th key={h}>{h}</th>)}</tr></thead>
+                    <tbody>
+                      {remarquesEvaluateur.map((e) => (
+                        <tr key={e.id}>
+                          <td>{e.conseiller}</td>
+                          <td style={{whiteSpace:"nowrap"}}>{e.date || "—"}</td>
+                          <td style={{fontSize:12}}>{e.ecart}</td>
+                          <td style={{fontSize:12}}>{e.constat}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      <div className="card" style={{padding:0, overflow:"hidden"}}>
+        <div style={{padding:"12px 14px", fontSize:13, fontWeight:600, color:"var(--purpleDark)", borderBottom:"1px solid var(--greyLine)"}}>
+          Conseillers en écart ({ccsEnEcart.length}) — {kpiFilter}
+        </div>
+        <div style={{overflowX:"auto", maxHeight:420, overflowY:"auto"}}>
+          <table>
+            <thead><tr>{["Conseiller","Manager","Score","Objectif","Nb éval."].map((h) => <th key={h}>{h}</th>)}</tr></thead>
+            <tbody>
+              {ccsEnEcart.map((c, i) => (
+                <tr key={c.conseiller+i}>
+                  <td>{c.conseiller}</td>
+                  <td>{c.manager}</td>
+                  <td style={{fontWeight:600, color:"var(--red)"}}>{c.avgScore !== null ? `${c.avgScore}${c.unit}` : `${c.total} écart(s)`}</td>
+                  <td style={{fontSize:12, color:"var(--textMuted)"}}>{formatKpiValue(kpiFilter, objectif)}</td>
+                  <td style={{fontSize:12, color:"var(--textMuted)"}}>{c.hasRawData ? c.nbEval : "—"}</td>
+                </tr>
+              ))}
+              {ccsEnEcart.length === 0 && (
+                <tr><td colSpan="5" style={{textAlign:"center", padding:20, color:"var(--textMuted)"}}>Aucun conseiller en écart 🎉</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   VUE : PLAN D'ACTION (par indicateur)
+   ============================================================ */
+function PlanActionView({ ecarts, roster, allEvaluations, criteresEcarts, planActions, setPlanActions, auth }){
+  const isAdmin = auth.role === "admin";
+  const [kpiFilter, setKpiFilter] = useState(INDICATEURS[0]);
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const blankForm = { conseillerCible:"Toute l'équipe", itemImpacte:"", constat:"", actionCorrective:"", owner:"", statut:"À lancer", echeance:"" };
+  const [form, setForm] = useState(blankForm);
+
+  const availableMonths = useMemo(
+    () => computeAvailableMonths(allEvaluations, ecarts, criteresEcarts),
+    [allEvaluations, ecarts, criteresEcarts]
+  );
+  const defaultMonthKey = useMemo(() => {
+    const juillet = availableMonths.find((m) => m.key.endsWith("-07"));
+    return juillet ? juillet.key : (availableMonths[availableMonths.length-1]?.key || "");
+  }, [availableMonths]);
+  const [moisKey, setMoisKey] = useState(defaultMonthKey);
+  useEffect(() => { if (!moisKey && defaultMonthKey) setMoisKey(defaultMonthKey); }, [defaultMonthKey]);
+
+  const isItemKpi = kpiFilter === "Hubicus Voix" || kpiFilter === "Hubicus Mail" || kpiFilter === "Conformité Process (Auchan)" || kpiFilter === "Conformité Process (Interne)" || kpiFilter === "Conformité Transfert";
+  const ecartsForMonth = useMemo(() => moisKey ? ecarts.filter((e) => monthKeyFromDate(e.date) === moisKey) : ecarts, [ecarts, moisKey]);
+  const evalsForMonth = useMemo(() => (allEvaluations||[]).filter((ev) => !moisKey || monthKeyFromDate(ev.date) === moisKey), [allEvaluations, moisKey]);
+
+  const realise = useMemo(() => computeGlobalKpiRealise(ecartsForMonth, evalsForMonth, kpiFilter), [ecartsForMonth, evalsForMonth, kpiFilter]);
+  const objectif = OBJECTIFS[kpiFilter];
+
+  const rosterNames = useMemo(() => [...new Set(roster.map((r) => displayConseillerName(r.conseiller)))].sort(), [roster]);
+
+  const filtered = useMemo(() => planActions.filter((p) => p.indicateur === kpiFilter)
+    .sort((a,b) => (a.echeance || "").localeCompare(b.echeance || "")), [planActions, kpiFilter]);
+
+  function openNewForm(){
+    setForm(blankForm); setEditingId(null); setShowForm(true);
+  }
+  function openEditForm(p){
+    setForm({ conseillerCible:p.conseillerCible, itemImpacte:p.itemImpacte, constat:p.constat, actionCorrective:p.actionCorrective, owner:p.owner, statut:p.statut, echeance:p.echeance });
+    setEditingId(p.id); setShowForm(true);
+  }
+  function saveForm(){
+    if (editingId) {
+      setPlanActions(planActions.map((p) => p.id === editingId ? { ...p, ...form } : p));
+    } else {
+      setPlanActions([...planActions, { id: uid(), indicateur: kpiFilter, ...form, dateCreation: new Date().toISOString().slice(0,10) }]);
+    }
+    setShowForm(false); setEditingId(null);
+  }
+  function deleteAction(id){
+    if (window.confirm("Supprimer définitivement cette action ?")) setPlanActions(planActions.filter((p) => p.id !== id));
+  }
+  function updateStatut(id, statut){
+    setPlanActions(planActions.map((p) => p.id === id ? { ...p, statut } : p));
+  }
+  function updateOwner(id, owner){
+    setPlanActions(planActions.map((p) => p.id === id ? { ...p, owner } : p));
+  }
+
+  /* Génère automatiquement une action par item en écart (sur le mois sélectionné) qui n'a pas déjà
+     une action active — reprend la synthèse des remarques les plus fréquentes comme constat, propose
+     une action corrective, échéance J+15, statut initial "À lancer". */
+  function actualiserPlan(){
+    if (!isItemKpi) {
+      alert("La génération automatique n'est pas disponible pour cet indicateur (pas de décomposition par item dans les fichiers source).");
+      return;
+    }
+    if (!moisKey) { alert("Aucun mois disponible dans les données actuelles."); return; }
+    const relevant = (criteresEcarts||[]).filter((c) => c.indicateur === kpiFilter && monthKeyFromDate(c.date) === moisKey);
+    const byItem = {};
+    relevant.forEach((c) => {
+      if (!byItem[c.item]) byItem[c.item] = { item: c.item, remarques: {} };
+      byItem[c.item].remarques[c.remarque] = (byItem[c.item].remarques[c.remarque] || 0) + 1;
+    });
+    const items = Object.values(byItem);
+    const existingActiveItems = new Set(planActions.filter((p) => p.indicateur === kpiFilter && p.statut !== "Terminée").map((p) => p.itemImpacte));
+    const today = new Date().toISOString().slice(0,10);
+    const toAdd = [];
+    items.forEach((it) => {
+      if (existingActiveItems.has(it.item)) return;
+      const topRemarques = Object.entries(it.remarques).sort((a,b) => b[1]-a[1]).slice(0,2).map(([t,n]) => `${t} (${n})`).join(", ");
+      toAdd.push({
+        id: uid(), indicateur: kpiFilter, conseillerCible: "Toute l'équipe",
+        itemImpacte: it.item, constat: topRemarques, actionCorrective: suggestCorrectiveAction(it.item),
+        owner: "", statut: "À lancer", echeance: addDaysISO(today, 15), dateCreation: today,
+      });
+    });
+    if (toAdd.length === 0) {
+      alert("Aucune nouvelle action à créer : tous les items en écart sur ce mois ont déjà une action active, ou aucun écart détecté.");
+      return;
+    }
+    setPlanActions([...planActions, ...toAdd]);
+    alert(`${toAdd.length} action(s) créée(s) automatiquement pour ${monthLabelFromKey(moisKey)}.`);
+  }
+
+  return (
+    <div>
+      <SectionTitle icon="🎯">Plan d'action par indicateur</SectionTitle>
+
+      <div className="filters" style={{marginBottom:16}}>
+        <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600}}>Indicateur :</span>
+        <select value={kpiFilter} onChange={(e) => setKpiFilter(e.target.value)}>
+          {INDICATEURS.map((k) => <option key={k}>{k}</option>)}
+        </select>
+        <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600, marginLeft:8}}>Mois de référence :</span>
+        <select value={moisKey} onChange={(e) => setMoisKey(e.target.value)}>
+          {availableMonths.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
+        </select>
+        {isAdmin && <button className="btn" style={{marginLeft:8}} onClick={actualiserPlan}>🔄 Actualiser le plan d'action</button>}
+        {isAdmin && <button className="btn primary" style={{marginLeft:"auto"}} onClick={openNewForm}>+ Ajouter une action</button>}
+      </div>
+
+      <div className="stat-row" style={{display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:16, marginBottom:20}}>
+        <StatCard label="Réalisé" value={formatKpiValue(kpiFilter, realise)} tone={(realise !== null && realise < objectif) ? "bad" : "good"} />
+        <StatCard label="Objectif" value={formatKpiValue(kpiFilter, objectif)} tone="neutral" />
+        <StatCard label="Actions en cours" value={filtered.filter((p) => p.statut !== "Terminée").length} tone="neutral" sub={`${filtered.length} au total`} />
+      </div>
+
+      {showForm && (
+        <div className="card" style={{marginBottom:20, borderLeft:"4px solid var(--purple)"}}>
+          <div style={{fontWeight:600, fontSize:14, marginBottom:12}}>{editingId ? "Modifier l'action" : "Nouvelle action"} — {kpiFilter}</div>
+          <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:12}}>
+            <div>
+              <p className="field-label">Conseiller ciblé</p>
+              <select style={{width:"100%"}} value={form.conseillerCible} onChange={(e) => setForm({...form, conseillerCible:e.target.value})}>
+                <option>Toute l'équipe</option>
+                {rosterNames.map((n) => <option key={n}>{n}</option>)}
+              </select>
+            </div>
+            <div>
+              <p className="field-label">Owner</p>
+              <select style={{width:"100%"}} value={form.owner} onChange={(e) => setForm({...form, owner:e.target.value})}>
+                <option value="">—</option>
+                {MANAGERS.map((m) => <option key={m}>{m}</option>)}
+              </select>
+            </div>
+            <div>
+              <p className="field-label">Item impacté</p>
+              <input style={{width:"100%"}} value={form.itemImpacte} onChange={(e) => setForm({...form, itemImpacte:e.target.value})} placeholder="ex : Accueil téléphonique" />
+            </div>
+            <div>
+              <p className="field-label">Échéance</p>
+              <input type="date" style={{width:"100%"}} value={form.echeance} onChange={(e) => setForm({...form, echeance:e.target.value})} />
+            </div>
+            <div style={{gridColumn:"1 / -1"}}>
+              <p className="field-label">Constat</p>
+              <textarea style={{width:"100%"}} rows="2" value={form.constat} onChange={(e) => setForm({...form, constat:e.target.value})}></textarea>
+            </div>
+            <div style={{gridColumn:"1 / -1"}}>
+              <p className="field-label">Action corrective</p>
+              <textarea style={{width:"100%"}} rows="2" value={form.actionCorrective} onChange={(e) => setForm({...form, actionCorrective:e.target.value})}></textarea>
+            </div>
+            <div>
+              <p className="field-label">Statut</p>
+              <select style={{width:"100%"}} value={form.statut} onChange={(e) => setForm({...form, statut:e.target.value})}>
+                {["À lancer","En cours","Terminée"].map((s) => <option key={s}>{s}</option>)}
+              </select>
+            </div>
+          </div>
+          <div style={{marginTop:14, display:"flex", gap:8}}>
+            <button className="btn primary" onClick={saveForm}>💾 Enregistrer</button>
+            <button className="btn" onClick={() => { setShowForm(false); setEditingId(null); }}>Annuler</button>
+          </div>
+        </div>
+      )}
+
+      <div className="card" style={{padding:0, overflow:"hidden"}}>
+        <div style={{overflowX:"auto"}}>
+          <table>
+            <thead>
+              <tr>{["Conseiller ciblé","Item impacté","Constat","Action corrective","Owner","Statut","Échéance","Résultat post-coaching",""].map((h) => <th key={h}>{h}</th>)}</tr>
+            </thead>
+            <tbody>
+              {filtered.map((p) => {
+                const post = computeResultatPostCoaching(p, allEvaluations);
+                const enRetard = p.statut !== "Terminée" && p.echeance && p.echeance < new Date().toISOString().slice(0,10);
+                return (
+                  <tr key={p.id} style={{backgroundColor: enRetard ? "var(--redSoft)" : undefined}}>
+                    <td style={{fontSize:12}}>{p.conseillerCible}</td>
+                    <td style={{fontSize:12}}>{p.itemImpacte || "—"}</td>
+                    <td style={{fontSize:12, maxWidth:220}}><span className="truncate" style={{maxWidth:220, display:"inline-block"}}>{p.constat || "—"}</span></td>
+                    <td style={{fontSize:12, maxWidth:220}}><span className="truncate" style={{maxWidth:220, display:"inline-block"}}>{p.actionCorrective || "—"}</span></td>
+                    <td style={{fontSize:12}}>
+                      {isAdmin ? (
+                        <select value={p.owner || ""} onChange={(e) => updateOwner(p.id, e.target.value)}>
+                          <option value="">—</option>
+                          {MANAGERS.map((m) => <option key={m}>{m}</option>)}
+                        </select>
+                      ) : (p.owner || "—")}
+                    </td>
+                    <td>
+                      <select value={p.statut} onChange={(e) => updateStatut(p.id, e.target.value)}>
+                        {["À lancer","En cours","Terminée"].map((s) => <option key={s}>{s}</option>)}
+                      </select>
+                    </td>
+                    <td style={{fontSize:12, whiteSpace:"nowrap", color: enRetard ? "var(--red)" : undefined}}>{p.echeance || "—"}</td>
+                    <td style={{fontSize:12, fontWeight:600}}>
+                      {post ? `${formatKpiValue(kpiFilter, post.value)} (${post.nb} éval.)` : "En attente de données post-échéance"}
+                    </td>
+                    <td>{isAdmin && (
+                      <div style={{display:"flex", gap:4}}>
+                        <button className="btn" style={{padding:"2px 6px", fontSize:12}} onClick={() => openEditForm(p)}>✎</button>
+                        <button className="btn" style={{padding:"2px 6px", fontSize:12, color:"var(--red)"}} onClick={() => deleteAction(p.id)}>🗑</button>
+                      </div>
+                    )}</td>
+                  </tr>
+                );
+              })}
+              {filtered.length === 0 && (
+                <tr><td colSpan="9" style={{textAlign:"center", padding:20, color:"var(--textMuted)"}}>Aucune action pour cet indicateur.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App(){
   const [auth, setAuth] = useState(() => {
     try {
@@ -2530,12 +3082,14 @@ function App(){
   const [roster, setRoster] = useState(SEED_ROSTER);
   const [nccResponses, setNccResponses] = useState([]);
   const [allEvaluations, setAllEvaluations] = useState([]);
+  const [planActions, setPlanActions] = useState([]);
+  const [criteresEcarts, setCriteresEcarts] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [connStatus, setConnStatus] = useState("connecting"); // connecting | ok | unconfigured | error
   const [connError, setConnError] = useState("");
   const firstLoad = React.useRef(true);
-  const remoteUpdateRef = React.useRef({ ecarts: false, weekly: false, roster: false, nccResponses: false, allEvaluations: false });
+  const remoteUpdateRef = React.useRef({ ecarts: false, weekly: false, roster: false, nccResponses: false, allEvaluations: false, planActions: false, criteresEcarts: false });
 
   // Chargement initial + abonnement temps réel
   useEffect(() => {
@@ -2544,6 +3098,8 @@ function App(){
     let unsubRoster = () => {};
     let unsubNcc = () => {};
     let unsubEval = () => {};
+    let unsubPlanActions = () => {};
+    let unsubCriteres = () => {};
 
     (async () => {
       const resE = await fsLoad(STORAGE_KEY_ECARTS, SEED_ECARTS);
@@ -2551,15 +3107,19 @@ function App(){
       const resR = await fsLoad(STORAGE_KEY_ROSTER, SEED_ROSTER);
       const resN = await fsLoad(STORAGE_KEY_NCC_RESPONSES, []);
       const resAE = await fsLoad(STORAGE_KEY_ALL_EVALUATIONS, []);
+      const resPA = await fsLoad(STORAGE_KEY_PLAN_ACTIONS, []);
+      const resCE = await fsLoad(STORAGE_KEY_CRITERES_ECARTS, []);
       // Le chargement initial ne doit jamais déclencher une ré-écriture immédiate :
       // on vient de lire cette donnée, pas besoin de la réenregistrer telle quelle.
-      remoteUpdateRef.current = { ecarts: true, weekly: true, roster: true, nccResponses: true, allEvaluations: true };
+      remoteUpdateRef.current = { ecarts: true, weekly: true, roster: true, nccResponses: true, allEvaluations: true, planActions: true, criteresEcarts: true };
       setEcarts(resE.value);
       setWeekly(resW.value);
       // Un tableau vide enregistré avant l'ajout du roster ne doit pas écraser SEED_ROSTER
       setRoster(resR.value && resR.value.length > 0 ? resR.value : SEED_ROSTER);
       setNccResponses(resN.value || []);
       setAllEvaluations(resAE.value || []);
+      setPlanActions(resPA.value || []);
+      setCriteresEcarts(resCE.value || []);
       setConnStatus(resE.status);
       setConnError(resE.error || "");
       setLoaded(true);
@@ -2571,10 +3131,12 @@ function App(){
         unsubRoster = fsSubscribe(STORAGE_KEY_ROSTER, (val) => { remoteUpdateRef.current.roster = true; setRoster(val && val.length > 0 ? val : SEED_ROSTER); });
         unsubNcc = fsSubscribe(STORAGE_KEY_NCC_RESPONSES, (val) => { remoteUpdateRef.current.nccResponses = true; setNccResponses(val || []); });
         unsubEval = fsSubscribe(STORAGE_KEY_ALL_EVALUATIONS, (val) => { remoteUpdateRef.current.allEvaluations = true; setAllEvaluations(val || []); });
+        unsubPlanActions = fsSubscribe(STORAGE_KEY_PLAN_ACTIONS, (val) => { remoteUpdateRef.current.planActions = true; setPlanActions(val || []); });
+        unsubCriteres = fsSubscribe(STORAGE_KEY_CRITERES_ECARTS, (val) => { remoteUpdateRef.current.criteresEcarts = true; setCriteresEcarts(val || []); });
       }
     })();
 
-    return () => { unsubEcarts(); unsubWeekly(); unsubRoster(); unsubNcc(); unsubEval(); };
+    return () => { unsubEcarts(); unsubWeekly(); unsubRoster(); unsubNcc(); unsubEval(); unsubPlanActions(); unsubCriteres(); };
   }, []);
 
   // Sauvegarde (debounce) à chaque changement, une fois le chargement initial fait —
@@ -2583,8 +3145,9 @@ function App(){
   useEffect(() => {
     if (!loaded) return;
     if (remoteUpdateRef.current.ecarts || remoteUpdateRef.current.weekly || remoteUpdateRef.current.roster
-        || remoteUpdateRef.current.nccResponses || remoteUpdateRef.current.allEvaluations) {
-      remoteUpdateRef.current = { ecarts: false, weekly: false, roster: false, nccResponses: false, allEvaluations: false };
+        || remoteUpdateRef.current.nccResponses || remoteUpdateRef.current.allEvaluations || remoteUpdateRef.current.planActions
+        || remoteUpdateRef.current.criteresEcarts) {
+      remoteUpdateRef.current = { ecarts: false, weekly: false, roster: false, nccResponses: false, allEvaluations: false, planActions: false, criteresEcarts: false };
       return;
     }
     setSaving(true);
@@ -2595,11 +3158,13 @@ function App(){
         await fsSave(STORAGE_KEY_ROSTER, roster);
         await fsSave(STORAGE_KEY_NCC_RESPONSES, nccResponses);
         await fsSave(STORAGE_KEY_ALL_EVALUATIONS, allEvaluations);
+        await fsSave(STORAGE_KEY_PLAN_ACTIONS, planActions);
+        await fsSave(STORAGE_KEY_CRITERES_ECARTS, criteresEcarts);
       }
       setSaving(false);
     }, 500);
     return () => clearTimeout(t);
-  }, [ecarts, weekly, roster, nccResponses, allEvaluations, loaded, connStatus]);
+  }, [ecarts, weekly, roster, nccResponses, allEvaluations, planActions, criteresEcarts, loaded, connStatus]);
 
   async function saveNow(ecartsToSave, weeklyToSave){
     if (connStatus !== "ok") return { ok: false, reason: connStatus };
@@ -2616,6 +3181,8 @@ function App(){
     if (Array.isArray(data.repartition_equipes)) setRoster(data.repartition_equipes);
     if (Array.isArray(data.ncc_responses)) setNccResponses(data.ncc_responses);
     if (Array.isArray(data.toutes_evaluations)) setAllEvaluations(data.toutes_evaluations);
+    if (Array.isArray(data.plan_actions)) setPlanActions(data.plan_actions.map((p) => ({...p, id: p.id ?? uid()})));
+    if (Array.isArray(data.criteres_ecarts)) setCriteresEcarts(data.criteres_ecarts);
   }
 
   /* Intègre automatiquement les écarts détectés depuis les évaluations brutes (14 derniers jours, sous
@@ -2652,6 +3219,8 @@ function App(){
     { id:"reporting", label:"Reporting", icon:"📊" },
     { id:"performance", label:"Suivi performance", icon:"📈" },
     { id:"debriefing", label:"Suivi débriefing", icon:"📋" },
+    { id:"analyse", label:"Analyse", icon:"🔍" },
+    { id:"plan_action", label:"Plan d'action", icon:"🎯" },
     { id:"roster", label:"Répartition équipe", icon:"🧑‍🤝‍🧑" },
     { id:"nps", label:"Analyse NPS", icon:"⭐" },
     { id:"import", label:"Importer", icon:"⬆" },
@@ -2727,10 +3296,12 @@ function App(){
         {tab === "reporting" && <ReportingView ecarts={ecarts} weekly={weekly} roster={roster} allEvaluations={allEvaluations} />}
         {tab === "performance" && <PerformanceView ecarts={ecarts} weekly={weekly} roster={roster} allEvaluations={allEvaluations} />}
         {tab === "debriefing" && <DebriefingView ecarts={ecarts} setEcarts={setEcarts} weekly={weekly} onSaveNow={saveNow} roster={roster} allEvaluations={allEvaluations} />}
+        {tab === "analyse" && <AnalyseView ecarts={ecarts} roster={roster} allEvaluations={allEvaluations} nccResponses={nccResponses} criteresEcarts={criteresEcarts} />}
+        {tab === "plan_action" && <PlanActionView ecarts={ecarts} roster={roster} allEvaluations={allEvaluations} criteresEcarts={criteresEcarts} planActions={planActions} setPlanActions={setPlanActions} auth={auth} />}
         {tab === "roster" && auth.role === "admin" && <RosterView roster={roster} setRoster={setRoster} />}
         {tab === "nps" && <NPSView nccResponses={nccResponses} roster={roster} />}
         {tab === "import" && auth.role === "admin" && <ImportView ecarts={ecarts} setEcarts={setEcarts} onImportJSON={importFromJSON} roster={roster} setRoster={setRoster} nccResponses={nccResponses} setNccResponses={setNccResponses} allEvaluations={allEvaluations} setAllEvaluations={setAllEvaluations} />}
-        {tab === "export" && auth.role === "admin" && <ExportView ecarts={ecarts} weekly={weekly} roster={roster} nccResponses={nccResponses} allEvaluations={allEvaluations} />}
+        {tab === "export" && auth.role === "admin" && <ExportView ecarts={ecarts} weekly={weekly} roster={roster} nccResponses={nccResponses} allEvaluations={allEvaluations} planActions={planActions} criteresEcarts={criteresEcarts} />}
       </div>
 
       <div className="footer">

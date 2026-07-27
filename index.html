@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Suivi Qualité — TERSEA Madagascar</title>
-<!-- -->
+
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
@@ -37,7 +37,6 @@
   appId: "1:51800223156:web:49a541a49bc7976d8e16e1"
 
 };
-
 
 
   const isConfigured = firebaseConfig.apiKey !== "COLLE_TA_CLE_API_ICI";
@@ -2634,6 +2633,10 @@ const CORRECTIVE_ACTIONS_LIB = {
   "Justification du transfert": "Rappeler les critères de justification d'un transfert avant de le réaliser, pour limiter les transferts non pertinents.",
   "Bon interlocuteur": "Reprendre l'annuaire/les règles de routage pour s'assurer du bon interlocuteur avant tout transfert.",
   "Complétude": "Rappeler l'exigence de transmission complète du contexte client lors d'un transfert (aucune information manquante).",
+  "La qualité de la réponse apportée face à votre situation": "Reprendre avec le conseiller la qualité et la pertinence de la réponse apportée, avec des exemples concrets de bonnes réponses.",
+  "Le respect des promesses de votre conseiller": "Rappeler l'importance de ne s'engager que sur des promesses tenables, et de respecter les délais/engagements annoncés au client.",
+  "La compréhension de votre demande": "Travailler l'écoute active et la reformulation pour s'assurer d'une compréhension complète de la demande avant d'y répondre.",
+  "L'implication de votre conseiller à traiter votre demande": "Sensibiliser à l'engagement et à la prise en charge complète de la demande jusqu'à sa résolution.",
 };
 function suggestCorrectiveAction(item){
   return CORRECTIVE_ACTIONS_LIB[item.trim()] || `Organiser un point de coaching individuel ciblé sur l'item "${item.trim()}", avec réécoute/relecture d'un cas concret et mise en pratique.`;
@@ -2648,7 +2651,7 @@ function addDaysISO(dateStr, days){
    VUE : ANALYSE (par indicateur)
    ============================================================ */
 function AnalyseView({ ecarts, roster, allEvaluations, nccResponses, criteresEcarts }){
-  const isItemKpi = (k) => k === "Hubicus Voix" || k === "Hubicus Mail" || k === "Conformité Process (Auchan)" || k === "Conformité Process (Interne)" || k === "Conformité Transfert";
+  const isItemKpi = (k) => k === "Hubicus Voix" || k === "Hubicus Mail" || k === "Conformité Process (Auchan)" || k === "Conformité Process (Interne)" || k === "Conformité Transfert" || k.includes("NCC");
   const availableMonths = useMemo(
     () => computeAvailableMonths(allEvaluations, ecarts, nccResponses, criteresEcarts),
     [allEvaluations, ecarts, nccResponses, criteresEcarts]
@@ -2872,7 +2875,7 @@ function PlanActionView({ ecarts, roster, allEvaluations, criteresEcarts, planAc
   const [moisKey, setMoisKey] = useState(defaultMonthKey);
   useEffect(() => { if (!moisKey && defaultMonthKey) setMoisKey(defaultMonthKey); }, [defaultMonthKey]);
 
-  const isItemKpi = kpiFilter === "Hubicus Voix" || kpiFilter === "Hubicus Mail" || kpiFilter === "Conformité Process (Auchan)" || kpiFilter === "Conformité Process (Interne)" || kpiFilter === "Conformité Transfert";
+  const isItemKpi = kpiFilter === "Hubicus Voix" || kpiFilter === "Hubicus Mail" || kpiFilter === "Conformité Process (Auchan)" || kpiFilter === "Conformité Process (Interne)" || kpiFilter === "Conformité Transfert" || kpiFilter.includes("NCC");
   const ecartsForMonth = useMemo(() => moisKey ? ecarts.filter((e) => monthKeyFromDate(e.date) === moisKey) : ecarts, [ecarts, moisKey]);
   const evalsForMonth = useMemo(() => (allEvaluations||[]).filter((ev) => !moisKey || monthKeyFromDate(ev.date) === moisKey), [allEvaluations, moisKey]);
 

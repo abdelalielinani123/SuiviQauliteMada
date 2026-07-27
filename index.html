@@ -19,7 +19,7 @@
      ============================================================ -->
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-  import { getFirestore, doc, getDoc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+  import { getFirestore, doc, getDoc, setDoc, deleteDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
   import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 
   const firebaseConfig = {
@@ -49,7 +49,7 @@
       const app = initializeApp(firebaseConfig);
       const db = getFirestore(app);
       const auth = getAuth(app);
-      window.__fb = { db, doc, getDoc, setDoc, onSnapshot };
+      window.__fb = { db, doc, getDoc, setDoc, deleteDoc, onSnapshot };
       signInAnonymously(auth)
         .then(() => { window.__firebaseReady = true; })
         .catch((e) => { window.__firebaseError = e.message; window.__firebaseReady = true; });
@@ -635,6 +635,86 @@ function fsSubscribe(key, onChange){
     const ref = window.__fb.doc(window.__fb.db, "dashboard", key);
     return window.__fb.onSnapshot(ref, (snap) => {
       if (snap.exists() && snap.data().payload) onChange(snap.data().payload);
+    });
+  } catch (e) {
+    return () => {};
+  }
+}
+
+/* ============================================================
+   Sauvegarde "par morceaux" pour les tableaux volumineux —
+   Firestore refuse tout document dépassant 1 Mo ; au-delà d'un certain
+   volume de données (évaluations, items par critère...), un seul document
+   ne suffit plus. On découpe le tableau en plusieurs documents "_chunk_N"
+   plus un document "_meta" qui indique combien de morceaux existent.
+   ============================================================ */
+const FS_CHUNK_SIZE = 400;
+
+async function fsSaveChunked(key, arrayValue){
+  if (!window.__firebaseConfigured || window.__firebaseError || !window.__fb) return false;
+  try {
+    const arr = arrayValue || [];
+    const chunks = [];
+    for (let i = 0; i < arr.length; i += FS_CHUNK_SIZE) chunks.push(arr.slice(i, i + FS_CHUNK_SIZE));
+    const metaRef = window.__fb.doc(window.__fb.db, "dashboard", key + "_meta");
+    let prevCount = 0;
+    try {
+      const prevSnap = await window.__fb.getDoc(metaRef);
+      if (prevSnap.exists()) prevCount = prevSnap.data().count || 0;
+    } catch (e) {}
+    await Promise.all(chunks.map((chunk, i) =>
+      window.__fb.setDoc(window.__fb.doc(window.__fb.db, "dashboard", key + "_chunk_" + i), { payload: chunk })
+    ));
+    // Supprime les morceaux devenus inutiles si le tableau a rétréci depuis la dernière sauvegarde
+    if (prevCount > chunks.length) {
+      const toDelete = [];
+      for (let i = chunks.length; i < prevCount; i++) {
+        toDelete.push(window.__fb.deleteDoc(window.__fb.doc(window.__fb.db, "dashboard", key + "_chunk_" + i)));
+      }
+      await Promise.all(toDelete);
+    }
+    await window.__fb.setDoc(metaRef, { count: chunks.length, updatedAt: new Date().toISOString() });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function fsLoadChunked(key, fallback){
+  await waitForFirebase();
+  if (!window.__firebaseConfigured) return { value: fallback, status: "unconfigured" };
+  if (window.__firebaseError || !window.__fb) return { value: fallback, status: "error", error: window.__firebaseError };
+  try {
+    const metaRef = window.__fb.doc(window.__fb.db, "dashboard", key + "_meta");
+    const metaSnap = await window.__fb.getDoc(metaRef);
+    if (!metaSnap.exists()) return { value: fallback, status: "ok" };
+    const count = metaSnap.data().count || 0;
+    const chunkSnaps = await Promise.all(
+      Array.from({ length: count }, (_, i) => window.__fb.getDoc(window.__fb.doc(window.__fb.db, "dashboard", key + "_chunk_" + i)))
+    );
+    const merged = [];
+    chunkSnaps.forEach((s) => { if (s.exists() && s.data().payload) merged.push(...s.data().payload); });
+    return { value: merged, status: "ok" };
+  } catch (e) {
+    return { value: fallback, status: "error", error: e.message };
+  }
+}
+
+function fsSubscribeChunked(key, onChange){
+  if (!window.__firebaseConfigured || window.__firebaseError || !window.__fb) return () => {};
+  try {
+    const metaRef = window.__fb.doc(window.__fb.db, "dashboard", key + "_meta");
+    return window.__fb.onSnapshot(metaRef, async (snap) => {
+      if (!snap.exists()) return;
+      const count = snap.data().count || 0;
+      try {
+        const chunkSnaps = await Promise.all(
+          Array.from({ length: count }, (_, i) => window.__fb.getDoc(window.__fb.doc(window.__fb.db, "dashboard", key + "_chunk_" + i)))
+        );
+        const merged = [];
+        chunkSnaps.forEach((s) => { if (s.exists() && s.data().payload) merged.push(...s.data().payload); });
+        onChange(merged);
+      } catch (e) {}
     });
   } catch (e) {
     return () => {};
@@ -3108,10 +3188,10 @@ function App(){
       const resE = await fsLoad(STORAGE_KEY_ECARTS, SEED_ECARTS);
       const resW = await fsLoad(STORAGE_KEY_WEEKLY, SEED_WEEKLY);
       const resR = await fsLoad(STORAGE_KEY_ROSTER, SEED_ROSTER);
-      const resN = await fsLoad(STORAGE_KEY_NCC_RESPONSES, []);
-      const resAE = await fsLoad(STORAGE_KEY_ALL_EVALUATIONS, []);
+      const resN = await fsLoadChunked(STORAGE_KEY_NCC_RESPONSES, []);
+      const resAE = await fsLoadChunked(STORAGE_KEY_ALL_EVALUATIONS, []);
       const resPA = await fsLoad(STORAGE_KEY_PLAN_ACTIONS, []);
-      const resCE = await fsLoad(STORAGE_KEY_CRITERES_ECARTS, []);
+      const resCE = await fsLoadChunked(STORAGE_KEY_CRITERES_ECARTS, []);
       // Le chargement initial ne doit jamais déclencher une ré-écriture immédiate :
       // on vient de lire cette donnée, pas besoin de la réenregistrer telle quelle.
       remoteUpdateRef.current = { ecarts: true, weekly: true, roster: true, nccResponses: true, allEvaluations: true, planActions: true, criteresEcarts: true };
@@ -3132,10 +3212,10 @@ function App(){
         unsubEcarts = fsSubscribe(STORAGE_KEY_ECARTS, (val) => { remoteUpdateRef.current.ecarts = true; setEcarts(val); });
         unsubWeekly = fsSubscribe(STORAGE_KEY_WEEKLY, (val) => { remoteUpdateRef.current.weekly = true; setWeekly(val); });
         unsubRoster = fsSubscribe(STORAGE_KEY_ROSTER, (val) => { remoteUpdateRef.current.roster = true; setRoster(val && val.length > 0 ? val : SEED_ROSTER); });
-        unsubNcc = fsSubscribe(STORAGE_KEY_NCC_RESPONSES, (val) => { remoteUpdateRef.current.nccResponses = true; setNccResponses(val || []); });
-        unsubEval = fsSubscribe(STORAGE_KEY_ALL_EVALUATIONS, (val) => { remoteUpdateRef.current.allEvaluations = true; setAllEvaluations(val || []); });
+        unsubNcc = fsSubscribeChunked(STORAGE_KEY_NCC_RESPONSES, (val) => { remoteUpdateRef.current.nccResponses = true; setNccResponses(val || []); });
+        unsubEval = fsSubscribeChunked(STORAGE_KEY_ALL_EVALUATIONS, (val) => { remoteUpdateRef.current.allEvaluations = true; setAllEvaluations(val || []); });
         unsubPlanActions = fsSubscribe(STORAGE_KEY_PLAN_ACTIONS, (val) => { remoteUpdateRef.current.planActions = true; setPlanActions(val || []); });
-        unsubCriteres = fsSubscribe(STORAGE_KEY_CRITERES_ECARTS, (val) => { remoteUpdateRef.current.criteresEcarts = true; setCriteresEcarts(val || []); });
+        unsubCriteres = fsSubscribeChunked(STORAGE_KEY_CRITERES_ECARTS, (val) => { remoteUpdateRef.current.criteresEcarts = true; setCriteresEcarts(val || []); });
       }
     })();
 
@@ -3159,10 +3239,10 @@ function App(){
         await fsSave(STORAGE_KEY_ECARTS, ecarts);
         await fsSave(STORAGE_KEY_WEEKLY, weekly);
         await fsSave(STORAGE_KEY_ROSTER, roster);
-        await fsSave(STORAGE_KEY_NCC_RESPONSES, nccResponses);
-        await fsSave(STORAGE_KEY_ALL_EVALUATIONS, allEvaluations);
+        await fsSaveChunked(STORAGE_KEY_NCC_RESPONSES, nccResponses);
+        await fsSaveChunked(STORAGE_KEY_ALL_EVALUATIONS, allEvaluations);
         await fsSave(STORAGE_KEY_PLAN_ACTIONS, planActions);
-        await fsSave(STORAGE_KEY_CRITERES_ECARTS, criteresEcarts);
+        await fsSaveChunked(STORAGE_KEY_CRITERES_ECARTS, criteresEcarts);
       }
       setSaving(false);
     }, 500);

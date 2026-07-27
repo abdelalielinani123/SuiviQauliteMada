@@ -180,12 +180,19 @@ const STATUTS = ["À traiter", "OK", "KO"];
    ceci filtre l'usage normal, ce n'est pas une protection contre un accès malveillant).
    Modifie les mots de passe ci-dessous avant diffusion si besoin.
    ============================================================ */
-const AUTH_ACCOUNTS = {
-  "admin": { password: "TerseaMada2026!", role: "admin", label: "Administrateur" },
-  "mada": { password: "Auchan2026", role: "user", label: "Utilisateur" },
-};
+/* ============================================================
+   ACCÈS — ce fichier est statique, sans serveur : le système de comptes ci-dessous
+   filtre l'usage normal (accès admin vs utilisateur, propriétaire d'action), ce n'est
+   pas une protection contre un accès malveillant (le code source reste consultable).
+   Les comptes sont modifiables depuis l'onglet "Gestion utilisateurs" (admin uniquement) ;
+   SEED_USERS ne sert que d'amorçage la toute première fois qu'aucun compte n'a encore été créé.
+   ============================================================ */
+const SEED_USERS = [
+  { id: "seed-admin", username: "admin", password: "TerseaMada2026!", role: "admin", label: "Administrateur", ownerName: "" },
+  { id: "seed-user", username: "mada", password: "Auchan2026", role: "user", label: "Utilisateur", ownerName: "" },
+];
 const STORAGE_KEY_AUTH_SESSION = "tersea_dashboard_auth_session";
-const ADMIN_ONLY_TABS = new Set(["roster", "import", "export"]);
+const ADMIN_ONLY_TABS = new Set(["roster", "import", "export", "users"]);
 const STORAGE_KEY_ECARTS = "tersea_dashboard_ecarts";
 const STORAGE_KEY_WEEKLY = "tersea_dashboard_weekly";
 const STORAGE_KEY_ROSTER = "tersea_dashboard_roster";
@@ -193,6 +200,8 @@ const STORAGE_KEY_NCC_RESPONSES = "tersea_dashboard_ncc_responses";
 const STORAGE_KEY_ALL_EVALUATIONS = "tersea_dashboard_all_evaluations";
 const STORAGE_KEY_PLAN_ACTIONS = "tersea_dashboard_plan_actions";
 const STORAGE_KEY_CRITERES_ECARTS = "tersea_dashboard_criteres_ecarts";
+const STORAGE_KEY_ITEMS_STATS = "tersea_dashboard_items_stats";
+const STORAGE_KEY_USERS = "tersea_dashboard_users";
 const NOUVEAU_ANCIEN_SEUIL_JOURS = 90; // en dessous de ce seuil (date d'entrée en prod), un conseiller est considéré "Nouveau"
 
 /* ============================================================
@@ -778,13 +787,13 @@ function exportExcel(ecarts, weekly, roster){
   XLSX.utils.book_append_sheet(wb, ws3, "Historique KPI");
   XLSX.writeFile(wb, "Suivi_Debriefing_Manager.xlsx");
 }
-function exportForClaude(ecarts, weekly, roster, nccResponses, allEvaluations, planActions, criteresEcarts){
+function exportForClaude(ecarts, weekly, roster, nccResponses, allEvaluations, planActions, criteresEcarts, itemsStats){
   const payload = {
     genere_le: new Date().toISOString(),
     note: "Coller ce JSON dans une conversation Claude avec la consigne 'mets à jour le PowerPoint et l'Excel qualité avec ces données' pour régénérer les supports.",
     ecarts, historique_kpi: weekly, repartition_equipes: roster || [],
     ncc_responses: nccResponses || [], toutes_evaluations: allEvaluations || [],
-    plan_actions: planActions || [], criteres_ecarts: criteresEcarts || [],
+    plan_actions: planActions || [], criteres_ecarts: criteresEcarts || [], items_stats: itemsStats || [],
   };
   downloadBlob(JSON.stringify(payload, null, 2), "export_pour_claude.json", "application/json");
 }
@@ -2499,7 +2508,7 @@ function ImportView({ ecarts, setEcarts, onImportJSON, roster, setRoster, nccRes
 /* ============================================================
    VUE : EXTRACTIONS / EXPORT
    ============================================================ */
-function ExportView({ ecarts, weekly, roster, nccResponses, allEvaluations, planActions, criteresEcarts }) {
+function ExportView({ ecarts, weekly, roster, nccResponses, allEvaluations, planActions, criteresEcarts, itemsStats }) {
   const [fMgr, setFMgr] = useState("Tous");
   const [fInd, setFInd] = useState("Tous");
   const [fStat, setFStat] = useState("Tous");
@@ -2550,7 +2559,7 @@ function ExportView({ ecarts, weekly, roster, nccResponses, allEvaluations, plan
       <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))", gap:12, marginBottom:16}}>
         <button className="btn primary" onClick={exportSelection}>⬇ Exporter la sélection (CSV)</button>
         <button className="btn outline" onClick={() => exportExcel(ecarts, weekly, roster)}>📊 Générer le fichier Excel complet</button>
-        <button className="btn" onClick={() => exportForClaude(ecarts, weekly, roster, nccResponses, allEvaluations, planActions, criteresEcarts)}>⧉ Export pour régénérer le PowerPoint</button>
+        <button className="btn" onClick={() => exportForClaude(ecarts, weekly, roster, nccResponses, allEvaluations, planActions, criteresEcarts, itemsStats)}>⧉ Export pour régénérer le PowerPoint</button>
       </div>
 
       <div className="notice warn">
@@ -2566,7 +2575,7 @@ function ExportView({ ecarts, weekly, roster, nccResponses, allEvaluations, plan
 /* ============================================================
    APP PRINCIPALE
    ============================================================ */
-function LoginScreen({ onLogin }){
+function LoginScreen({ onLogin, users }){
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -2574,10 +2583,10 @@ function LoginScreen({ onLogin }){
   function handleSubmit(e){
     e.preventDefault();
     const key = username.trim().toLowerCase();
-    const account = AUTH_ACCOUNTS[key];
+    const account = (users || []).find((u) => u.username.toLowerCase() === key);
     if (account && account.password === password) {
       setError("");
-      onLogin({ username: key, role: account.role, label: account.label });
+      onLogin({ userId: account.id, username: account.username, role: account.role, label: account.label, ownerName: account.ownerName || "" });
     } else {
       setError("Identifiant ou mot de passe incorrect.");
     }
@@ -2643,6 +2652,14 @@ function computeResultatPostCoaching(action, allEvaluations){
 function formatKpiValue(kpi, v){
   if (v === null || v === undefined) return "—";
   return kpi.includes("NCC") ? `${v}/10` : `${v}%`;
+}
+
+/* Résultat (taux de conformité) d'un item précis pour un indicateur et un mois donnés —
+   basé sur l'ensemble des évaluations de cet item (pas seulement les écarts). */
+function getItemResult(itemsStats, indicateur, item, moisKey){
+  if (!itemsStats || !moisKey) return null;
+  const row = itemsStats.find((s) => s.indicateur === indicateur && s.item === item && s.mois === moisKey);
+  return row || null;
 }
 
 const MOIS_FR = {"01":"Janvier","02":"Février","03":"Mars","04":"Avril","05":"Mai","06":"Juin","07":"Juillet","08":"Août","09":"Septembre","10":"Octobre","11":"Novembre","12":"Décembre"};
@@ -2730,7 +2747,7 @@ function addDaysISO(dateStr, days){
 /* ============================================================
    VUE : ANALYSE (par indicateur)
    ============================================================ */
-function AnalyseView({ ecarts, roster, allEvaluations, nccResponses, criteresEcarts }){
+function AnalyseView({ ecarts, roster, allEvaluations, nccResponses, criteresEcarts, itemsStats }){
   const isItemKpi = (k) => k === "Hubicus Voix" || k === "Hubicus Mail" || k === "Conformité Process (Auchan)" || k === "Conformité Process (Interne)" || k === "Conformité Transfert" || k.includes("NCC");
   const availableMonths = useMemo(
     () => computeAvailableMonths(allEvaluations, ecarts, nccResponses, criteresEcarts),
@@ -2837,9 +2854,18 @@ function AnalyseView({ ecarts, roster, allEvaluations, nccResponses, criteresEca
           </div>
           {itemsBreakdown.length === 0 ? <p style={{fontSize:13, color:"var(--textMuted)"}}>Aucun écart par item sur ce mois.</p> : (
             <div style={{display:"flex", flexDirection:"column", gap:16}}>
-              {itemsBreakdown.map((it) => (
+              {itemsBreakdown.map((it) => {
+                const res = getItemResult(itemsStats, kpiFilter, it.item, moisKey||defaultMonthKey);
+                return (
                 <div key={it.item} style={{borderLeft:"3px solid var(--red)", paddingLeft:12}}>
-                  <div style={{fontWeight:600, fontSize:13, marginBottom:4}}>{it.item} — {it.count} écart(s)</div>
+                  <div style={{fontWeight:600, fontSize:13, marginBottom:4, display:"flex", alignItems:"center", gap:10}}>
+                    <span>{it.item} — {it.count} écart(s)</span>
+                    {res && res.taux !== null && (
+                      <span className="badge" style={{background: res.taux < OBJECTIFS[kpiFilter] ? "var(--redSoft)" : "var(--greenSoft, #E3F5EC)", color: res.taux < OBJECTIFS[kpiFilter] ? "var(--red)" : "var(--green)"}}>
+                        Résultat : {res.taux}% ({res.ok}/{res.total})
+                      </span>
+                    )}
+                  </div>
                   <div style={{fontSize:12, color:"var(--textMuted)", marginBottom:6}}>
                     {it.remarques.map((r) => `${r.texte} (${r.n})`).join(" · ")}
                   </div>
@@ -2854,7 +2880,8 @@ function AnalyseView({ ecarts, roster, allEvaluations, nccResponses, criteresEca
                     </div>
                   </details>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -2936,8 +2963,10 @@ function AnalyseView({ ecarts, roster, allEvaluations, nccResponses, criteresEca
 /* ============================================================
    VUE : PLAN D'ACTION (par indicateur)
    ============================================================ */
-function PlanActionView({ ecarts, roster, allEvaluations, criteresEcarts, planActions, setPlanActions, auth }){
+function PlanActionView({ ecarts, roster, allEvaluations, criteresEcarts, itemsStats, planActions, setPlanActions, auth }){
   const isAdmin = auth.role === "admin";
+  const isOwnerOf = (p) => !isAdmin && auth.ownerName && p.owner === auth.ownerName;
+  const canEdit = (p) => isAdmin || isOwnerOf(p);
   const [kpiFilter, setKpiFilter] = useState(INDICATEURS[0]);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -3103,16 +3132,21 @@ function PlanActionView({ ecarts, roster, allEvaluations, criteresEcarts, planAc
         <div style={{overflowX:"auto"}}>
           <table>
             <thead>
-              <tr>{["Conseiller ciblé","Item impacté","Constat","Action corrective","Owner","Statut","Échéance","Résultat post-coaching",""].map((h) => <th key={h}>{h}</th>)}</tr>
+              <tr>{["Conseiller ciblé","Item impacté","Résultat actuel (item)","Constat","Action corrective","Owner","Statut","Échéance","Résultat post-coaching",""].map((h) => <th key={h}>{h}</th>)}</tr>
             </thead>
             <tbody>
               {filtered.map((p) => {
                 const post = computeResultatPostCoaching(p, allEvaluations);
+                const itemResult = getItemResult(itemsStats, p.indicateur, p.itemImpacte, moisKey);
                 const enRetard = p.statut !== "Terminée" && p.echeance && p.echeance < new Date().toISOString().slice(0,10);
+                const editable = canEdit(p);
                 return (
                   <tr key={p.id} style={{backgroundColor: enRetard ? "var(--redSoft)" : undefined}}>
                     <td style={{fontSize:12}}>{p.conseillerCible}</td>
                     <td style={{fontSize:12}}>{p.itemImpacte || "—"}</td>
+                    <td style={{fontSize:12, fontWeight:600, color: itemResult && itemResult.taux !== null && itemResult.taux < OBJECTIFS[p.indicateur] ? "var(--red)" : "var(--green)"}}>
+                      {itemResult && itemResult.taux !== null ? `${itemResult.taux}% (${itemResult.ok}/${itemResult.total})` : "—"}
+                    </td>
                     <td style={{fontSize:12, maxWidth:220}}><span className="truncate" style={{maxWidth:220, display:"inline-block"}}>{p.constat || "—"}</span></td>
                     <td style={{fontSize:12, maxWidth:220}}><span className="truncate" style={{maxWidth:220, display:"inline-block"}}>{p.actionCorrective || "—"}</span></td>
                     <td style={{fontSize:12}}>
@@ -3132,21 +3166,124 @@ function PlanActionView({ ecarts, roster, allEvaluations, criteresEcarts, planAc
                     <td style={{fontSize:12, fontWeight:600}}>
                       {post ? `${formatKpiValue(kpiFilter, post.value)} (${post.nb} éval.)` : "En attente de données post-échéance"}
                     </td>
-                    <td>{isAdmin && (
+                    <td>
                       <div style={{display:"flex", gap:4}}>
-                        <button className="btn" style={{padding:"2px 6px", fontSize:12}} onClick={() => openEditForm(p)}>✎</button>
-                        <button className="btn" style={{padding:"2px 6px", fontSize:12, color:"var(--red)"}} onClick={() => deleteAction(p.id)}>🗑</button>
+                        {editable && <button className="btn" style={{padding:"2px 6px", fontSize:12}} onClick={() => openEditForm(p)}>✎</button>}
+                        {isAdmin && <button className="btn" style={{padding:"2px 6px", fontSize:12, color:"var(--red)"}} onClick={() => deleteAction(p.id)}>🗑</button>}
                       </div>
-                    )}</td>
+                    </td>
                   </tr>
                 );
               })}
               {filtered.length === 0 && (
-                <tr><td colSpan="9" style={{textAlign:"center", padding:20, color:"var(--textMuted)"}}>Aucune action pour cet indicateur.</td></tr>
+                <tr><td colSpan="10" style={{textAlign:"center", padding:20, color:"var(--textMuted)"}}>Aucune action pour cet indicateur.</td></tr>
               )}
             </tbody>
           </table>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   VUE : GESTION DES UTILISATEURS (admin uniquement)
+   ============================================================ */
+function UserManagementView({ users, setUsers, currentUserId }){
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const blank = { username:"", password:"", role:"user", label:"", ownerName:"" };
+  const [form, setForm] = useState(blank);
+  const [error, setError] = useState("");
+
+  function openNew(){ setForm(blank); setEditingId(null); setError(""); setShowForm(true); }
+  function openEdit(u){ setForm({ username:u.username, password:"", role:u.role, label:u.label, ownerName:u.ownerName||"" }); setEditingId(u.id); setError(""); setShowForm(true); }
+
+  function save(){
+    const uname = form.username.trim();
+    if (!uname) { setError("Identifiant requis."); return; }
+    const clash = users.find((u) => u.username.toLowerCase() === uname.toLowerCase() && u.id !== editingId);
+    if (clash) { setError("Cet identifiant existe déjà."); return; }
+    if (editingId) {
+      setUsers(users.map((u) => u.id === editingId
+        ? { ...u, username: uname, role: form.role, label: form.label || uname, ownerName: form.ownerName, ...(form.password ? { password: form.password } : {}) }
+        : u));
+    } else {
+      if (!form.password) { setError("Mot de passe requis pour un nouveau compte."); return; }
+      setUsers([...users, { id: uid(), username: uname, password: form.password, role: form.role, label: form.label || uname, ownerName: form.ownerName }]);
+    }
+    setShowForm(false); setEditingId(null);
+  }
+
+  function remove(u){
+    if (u.role === "admin" && users.filter((x) => x.role === "admin").length <= 1) {
+      alert("Impossible de supprimer le dernier compte administrateur.");
+      return;
+    }
+    if (u.id === currentUserId) { alert("Tu ne peux pas supprimer ton propre compte pendant que tu es connecté avec."); return; }
+    if (window.confirm(`Supprimer le compte "${u.username}" ?`)) setUsers(users.filter((x) => x.id !== u.id));
+  }
+
+  return (
+    <div>
+      <SectionTitle icon="🔐">Gestion des utilisateurs</SectionTitle>
+      <div className="notice info" style={{marginBottom:16}}>
+        <span className="ic">ℹ</span>
+        <div>Ces comptes contrôlent l'accès au dashboard. Rappel : ce fichier étant statique (sans serveur), ce n'est pas
+        une sécurité contre un accès malveillant — seulement un filtre d'usage pour séparer les rôles.</div>
+      </div>
+      <button className="btn primary" style={{marginBottom:16}} onClick={openNew}>+ Créer un utilisateur</button>
+
+      {showForm && (
+        <div className="card" style={{marginBottom:20, borderLeft:"4px solid var(--purple)"}}>
+          <div style={{fontWeight:600, marginBottom:12}}>{editingId ? "Modifier l'utilisateur" : "Nouvel utilisateur"}</div>
+          <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:12}}>
+            <div><p className="field-label">Identifiant</p><input style={{width:"100%"}} value={form.username} onChange={(e) => setForm({...form, username:e.target.value})} /></div>
+            <div><p className="field-label">{editingId ? "Nouveau mot de passe (laisser vide pour ne pas changer)" : "Mot de passe"}</p><input type="text" style={{width:"100%"}} value={form.password} onChange={(e) => setForm({...form, password:e.target.value})} /></div>
+            <div>
+              <p className="field-label">Rôle</p>
+              <select style={{width:"100%"}} value={form.role} onChange={(e) => setForm({...form, role:e.target.value})}>
+                <option value="admin">Administrateur</option>
+                <option value="user">Utilisateur</option>
+              </select>
+            </div>
+            <div><p className="field-label">Nom affiché</p><input style={{width:"100%"}} value={form.label} onChange={(e) => setForm({...form, label:e.target.value})} placeholder="ex : Christophe" /></div>
+            <div style={{gridColumn:"1 / -1"}}>
+              <p className="field-label">Nom "Owner" lié (optionnel — permet à cet utilisateur de modifier ses propres actions dans le Plan d'action)</p>
+              <select style={{width:"100%"}} value={form.ownerName} onChange={(e) => setForm({...form, ownerName:e.target.value})}>
+                <option value="">Aucun</option>
+                {MANAGERS.map((m) => <option key={m}>{m}</option>)}
+              </select>
+            </div>
+          </div>
+          {error && <div className="status-msg err" style={{marginTop:10}}>⚠ {error}</div>}
+          <div style={{marginTop:14, display:"flex", gap:8}}>
+            <button className="btn primary" onClick={save}>💾 Enregistrer</button>
+            <button className="btn" onClick={() => { setShowForm(false); setEditingId(null); }}>Annuler</button>
+          </div>
+        </div>
+      )}
+
+      <div className="card" style={{padding:0, overflow:"hidden"}}>
+        <table>
+          <thead><tr>{["Identifiant","Nom affiché","Rôle","Owner lié",""].map((h) => <th key={h}>{h}</th>)}</tr></thead>
+          <tbody>
+            {users.map((u) => (
+              <tr key={u.id}>
+                <td>{u.username}{u.id === currentUserId ? " (toi)" : ""}</td>
+                <td>{u.label}</td>
+                <td>{u.role === "admin" ? "Administrateur" : "Utilisateur"}</td>
+                <td>{u.ownerName || "—"}</td>
+                <td>
+                  <div style={{display:"flex", gap:4}}>
+                    <button className="btn" style={{padding:"2px 8px", fontSize:12}} onClick={() => openEdit(u)}>✎ Modifier</button>
+                    <button className="btn" style={{padding:"2px 8px", fontSize:12, color:"var(--red)"}} onClick={() => remove(u)}>🗑 Supprimer</button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
@@ -3167,12 +3304,14 @@ function App(){
   const [allEvaluations, setAllEvaluations] = useState([]);
   const [planActions, setPlanActions] = useState([]);
   const [criteresEcarts, setCriteresEcarts] = useState([]);
+  const [itemsStats, setItemsStats] = useState([]);
+  const [users, setUsers] = useState(SEED_USERS);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [connStatus, setConnStatus] = useState("connecting"); // connecting | ok | unconfigured | error
   const [connError, setConnError] = useState("");
   const firstLoad = React.useRef(true);
-  const remoteUpdateRef = React.useRef({ ecarts: false, weekly: false, roster: false, nccResponses: false, allEvaluations: false, planActions: false, criteresEcarts: false });
+  const remoteUpdateRef = React.useRef({ ecarts: false, weekly: false, roster: false, nccResponses: false, allEvaluations: false, planActions: false, criteresEcarts: false, itemsStats: false, users: false });
 
   // Chargement initial + abonnement temps réel
   useEffect(() => {
@@ -3183,6 +3322,8 @@ function App(){
     let unsubEval = () => {};
     let unsubPlanActions = () => {};
     let unsubCriteres = () => {};
+    let unsubItemsStats = () => {};
+    let unsubUsers = () => {};
 
     (async () => {
       const resE = await fsLoad(STORAGE_KEY_ECARTS, SEED_ECARTS);
@@ -3192,9 +3333,11 @@ function App(){
       const resAE = await fsLoadChunked(STORAGE_KEY_ALL_EVALUATIONS, []);
       const resPA = await fsLoad(STORAGE_KEY_PLAN_ACTIONS, []);
       const resCE = await fsLoadChunked(STORAGE_KEY_CRITERES_ECARTS, []);
+      const resIS = await fsLoad(STORAGE_KEY_ITEMS_STATS, []);
+      const resU = await fsLoad(STORAGE_KEY_USERS, SEED_USERS);
       // Le chargement initial ne doit jamais déclencher une ré-écriture immédiate :
       // on vient de lire cette donnée, pas besoin de la réenregistrer telle quelle.
-      remoteUpdateRef.current = { ecarts: true, weekly: true, roster: true, nccResponses: true, allEvaluations: true, planActions: true, criteresEcarts: true };
+      remoteUpdateRef.current = { ecarts: true, weekly: true, roster: true, nccResponses: true, allEvaluations: true, planActions: true, criteresEcarts: true, itemsStats: true, users: true };
       setEcarts(resE.value);
       setWeekly(resW.value);
       // Un tableau vide enregistré avant l'ajout du roster ne doit pas écraser SEED_ROSTER
@@ -3203,6 +3346,8 @@ function App(){
       setAllEvaluations(resAE.value || []);
       setPlanActions(resPA.value || []);
       setCriteresEcarts(resCE.value || []);
+      setItemsStats(resIS.value || []);
+      setUsers(resU.value && resU.value.length > 0 ? resU.value : SEED_USERS);
       setConnStatus(resE.status);
       setConnError(resE.error || "");
       setLoaded(true);
@@ -3216,10 +3361,12 @@ function App(){
         unsubEval = fsSubscribeChunked(STORAGE_KEY_ALL_EVALUATIONS, (val) => { remoteUpdateRef.current.allEvaluations = true; setAllEvaluations(val || []); });
         unsubPlanActions = fsSubscribe(STORAGE_KEY_PLAN_ACTIONS, (val) => { remoteUpdateRef.current.planActions = true; setPlanActions(val || []); });
         unsubCriteres = fsSubscribeChunked(STORAGE_KEY_CRITERES_ECARTS, (val) => { remoteUpdateRef.current.criteresEcarts = true; setCriteresEcarts(val || []); });
+        unsubItemsStats = fsSubscribe(STORAGE_KEY_ITEMS_STATS, (val) => { remoteUpdateRef.current.itemsStats = true; setItemsStats(val || []); });
+        unsubUsers = fsSubscribe(STORAGE_KEY_USERS, (val) => { remoteUpdateRef.current.users = true; setUsers(val && val.length > 0 ? val : SEED_USERS); });
       }
     })();
 
-    return () => { unsubEcarts(); unsubWeekly(); unsubRoster(); unsubNcc(); unsubEval(); unsubPlanActions(); unsubCriteres(); };
+    return () => { unsubEcarts(); unsubWeekly(); unsubRoster(); unsubNcc(); unsubEval(); unsubPlanActions(); unsubCriteres(); unsubItemsStats(); unsubUsers(); };
   }, []);
 
   // Sauvegarde (debounce) à chaque changement, une fois le chargement initial fait —
@@ -3229,8 +3376,8 @@ function App(){
     if (!loaded) return;
     if (remoteUpdateRef.current.ecarts || remoteUpdateRef.current.weekly || remoteUpdateRef.current.roster
         || remoteUpdateRef.current.nccResponses || remoteUpdateRef.current.allEvaluations || remoteUpdateRef.current.planActions
-        || remoteUpdateRef.current.criteresEcarts) {
-      remoteUpdateRef.current = { ecarts: false, weekly: false, roster: false, nccResponses: false, allEvaluations: false, planActions: false, criteresEcarts: false };
+        || remoteUpdateRef.current.criteresEcarts || remoteUpdateRef.current.itemsStats || remoteUpdateRef.current.users) {
+      remoteUpdateRef.current = { ecarts: false, weekly: false, roster: false, nccResponses: false, allEvaluations: false, planActions: false, criteresEcarts: false, itemsStats: false, users: false };
       return;
     }
     setSaving(true);
@@ -3243,11 +3390,13 @@ function App(){
         await fsSaveChunked(STORAGE_KEY_ALL_EVALUATIONS, allEvaluations);
         await fsSave(STORAGE_KEY_PLAN_ACTIONS, planActions);
         await fsSaveChunked(STORAGE_KEY_CRITERES_ECARTS, criteresEcarts);
+        await fsSave(STORAGE_KEY_ITEMS_STATS, itemsStats);
+        await fsSave(STORAGE_KEY_USERS, users);
       }
       setSaving(false);
     }, 500);
     return () => clearTimeout(t);
-  }, [ecarts, weekly, roster, nccResponses, allEvaluations, planActions, criteresEcarts, loaded, connStatus]);
+  }, [ecarts, weekly, roster, nccResponses, allEvaluations, planActions, criteresEcarts, itemsStats, users, loaded, connStatus]);
 
   async function saveNow(ecartsToSave, weeklyToSave){
     if (connStatus !== "ok") return { ok: false, reason: connStatus };
@@ -3266,6 +3415,7 @@ function App(){
     if (Array.isArray(data.toutes_evaluations)) setAllEvaluations(data.toutes_evaluations);
     if (Array.isArray(data.plan_actions)) setPlanActions(data.plan_actions.map((p) => ({...p, id: p.id ?? uid()})));
     if (Array.isArray(data.criteres_ecarts)) setCriteresEcarts(data.criteres_ecarts);
+    if (Array.isArray(data.items_stats)) setItemsStats(data.items_stats);
   }
 
   /* Intègre automatiquement les écarts détectés depuis les évaluations brutes (14 derniers jours, sous
@@ -3308,6 +3458,7 @@ function App(){
     { id:"nps", label:"Analyse NPS", icon:"⭐" },
     { id:"import", label:"Importer", icon:"⬆" },
     { id:"export", label:"Extractions", icon:"🗄" },
+    { id:"users", label:"Gestion utilisateurs", icon:"🔐" },
   ];
   const tabs = auth && auth.role === "admin" ? allTabs : allTabs.filter((t) => !ADMIN_ONLY_TABS.has(t.id));
 
@@ -3323,7 +3474,7 @@ function App(){
     error: "Erreur de connexion Firebase — données non partagées",
   }[connStatus];
 
-  if (!auth) return <LoginScreen onLogin={handleLogin} />;
+  if (!auth) return <LoginScreen onLogin={handleLogin} users={users} />;
 
   return (
     <div>
@@ -3379,12 +3530,13 @@ function App(){
         {tab === "reporting" && <ReportingView ecarts={ecarts} weekly={weekly} roster={roster} allEvaluations={allEvaluations} />}
         {tab === "performance" && <PerformanceView ecarts={ecarts} weekly={weekly} roster={roster} allEvaluations={allEvaluations} />}
         {tab === "debriefing" && <DebriefingView ecarts={ecarts} setEcarts={setEcarts} weekly={weekly} onSaveNow={saveNow} roster={roster} allEvaluations={allEvaluations} />}
-        {tab === "analyse" && <AnalyseView ecarts={ecarts} roster={roster} allEvaluations={allEvaluations} nccResponses={nccResponses} criteresEcarts={criteresEcarts} />}
-        {tab === "plan_action" && <PlanActionView ecarts={ecarts} roster={roster} allEvaluations={allEvaluations} criteresEcarts={criteresEcarts} planActions={planActions} setPlanActions={setPlanActions} auth={auth} />}
+        {tab === "analyse" && <AnalyseView ecarts={ecarts} roster={roster} allEvaluations={allEvaluations} nccResponses={nccResponses} criteresEcarts={criteresEcarts} itemsStats={itemsStats} />}
+        {tab === "plan_action" && <PlanActionView ecarts={ecarts} roster={roster} allEvaluations={allEvaluations} criteresEcarts={criteresEcarts} itemsStats={itemsStats} planActions={planActions} setPlanActions={setPlanActions} auth={auth} />}
         {tab === "roster" && auth.role === "admin" && <RosterView roster={roster} setRoster={setRoster} />}
         {tab === "nps" && <NPSView nccResponses={nccResponses} roster={roster} />}
         {tab === "import" && auth.role === "admin" && <ImportView ecarts={ecarts} setEcarts={setEcarts} onImportJSON={importFromJSON} roster={roster} setRoster={setRoster} nccResponses={nccResponses} setNccResponses={setNccResponses} allEvaluations={allEvaluations} setAllEvaluations={setAllEvaluations} />}
-        {tab === "export" && auth.role === "admin" && <ExportView ecarts={ecarts} weekly={weekly} roster={roster} nccResponses={nccResponses} allEvaluations={allEvaluations} planActions={planActions} criteresEcarts={criteresEcarts} />}
+        {tab === "export" && auth.role === "admin" && <ExportView ecarts={ecarts} weekly={weekly} roster={roster} nccResponses={nccResponses} allEvaluations={allEvaluations} planActions={planActions} criteresEcarts={criteresEcarts} itemsStats={itemsStats} />}
+        {tab === "users" && auth.role === "admin" && <UserManagementView users={users} setUsers={setUsers} currentUserId={auth.userId} />}
       </div>
 
       <div className="footer">

@@ -3311,7 +3311,7 @@ function App(){
   const [connStatus, setConnStatus] = useState("connecting"); // connecting | ok | unconfigured | error
   const [connError, setConnError] = useState("");
   const firstLoad = React.useRef(true);
-  const remoteUpdateRef = React.useRef({ ecarts: false, weekly: false, roster: false, nccResponses: false, allEvaluations: false, planActions: false, criteresEcarts: false, itemsStats: false, users: false });
+  const remoteUpdateRef = React.useRef({ ecarts: null, weekly: null, roster: null, nccResponses: null, allEvaluations: null, planActions: null, criteresEcarts: null, itemsStats: null, users: null });
 
   // Chargement initial + abonnement temps réel
   useEffect(() => {
@@ -3337,32 +3337,36 @@ function App(){
       const resU = await fsLoad(STORAGE_KEY_USERS, SEED_USERS);
       // Le chargement initial ne doit jamais déclencher une ré-écriture immédiate :
       // on vient de lire cette donnée, pas besoin de la réenregistrer telle quelle.
-      remoteUpdateRef.current = { ecarts: true, weekly: true, roster: true, nccResponses: true, allEvaluations: true, planActions: true, criteresEcarts: true, itemsStats: true, users: true };
-      setEcarts(resE.value);
-      setWeekly(resW.value);
-      // Un tableau vide enregistré avant l'ajout du roster ne doit pas écraser SEED_ROSTER
-      setRoster(resR.value && resR.value.length > 0 ? resR.value : SEED_ROSTER);
-      setNccResponses(resN.value || []);
-      setAllEvaluations(resAE.value || []);
-      setPlanActions(resPA.value || []);
-      setCriteresEcarts(resCE.value || []);
-      setItemsStats(resIS.value || []);
-      setUsers(resU.value && resU.value.length > 0 ? resU.value : SEED_USERS);
+      const initEcarts = resE.value, initWeekly = resW.value;
+      const initRoster = resR.value && resR.value.length > 0 ? resR.value : SEED_ROSTER;
+      const initNcc = resN.value || [], initAE = resAE.value || [], initPA = resPA.value || [];
+      const initCE = resCE.value || [], initIS = resIS.value || [];
+      const initUsers = resU.value && resU.value.length > 0 ? resU.value : SEED_USERS;
+      remoteUpdateRef.current = { ecarts: initEcarts, weekly: initWeekly, roster: initRoster, nccResponses: initNcc, allEvaluations: initAE, planActions: initPA, criteresEcarts: initCE, itemsStats: initIS, users: initUsers };
+      setEcarts(initEcarts);
+      setWeekly(initWeekly);
+      setRoster(initRoster);
+      setNccResponses(initNcc);
+      setAllEvaluations(initAE);
+      setPlanActions(initPA);
+      setCriteresEcarts(initCE);
+      setItemsStats(initIS);
+      setUsers(initUsers);
       setConnStatus(resE.status);
       setConnError(resE.error || "");
       setLoaded(true);
       firstLoad.current = false;
 
       if (resE.status === "ok") {
-        unsubEcarts = fsSubscribe(STORAGE_KEY_ECARTS, (val) => { remoteUpdateRef.current.ecarts = true; setEcarts(val); });
-        unsubWeekly = fsSubscribe(STORAGE_KEY_WEEKLY, (val) => { remoteUpdateRef.current.weekly = true; setWeekly(val); });
-        unsubRoster = fsSubscribe(STORAGE_KEY_ROSTER, (val) => { remoteUpdateRef.current.roster = true; setRoster(val && val.length > 0 ? val : SEED_ROSTER); });
-        unsubNcc = fsSubscribeChunked(STORAGE_KEY_NCC_RESPONSES, (val) => { remoteUpdateRef.current.nccResponses = true; setNccResponses(val || []); });
-        unsubEval = fsSubscribeChunked(STORAGE_KEY_ALL_EVALUATIONS, (val) => { remoteUpdateRef.current.allEvaluations = true; setAllEvaluations(val || []); });
-        unsubPlanActions = fsSubscribe(STORAGE_KEY_PLAN_ACTIONS, (val) => { remoteUpdateRef.current.planActions = true; setPlanActions(val || []); });
-        unsubCriteres = fsSubscribeChunked(STORAGE_KEY_CRITERES_ECARTS, (val) => { remoteUpdateRef.current.criteresEcarts = true; setCriteresEcarts(val || []); });
-        unsubItemsStats = fsSubscribe(STORAGE_KEY_ITEMS_STATS, (val) => { remoteUpdateRef.current.itemsStats = true; setItemsStats(val || []); });
-        unsubUsers = fsSubscribe(STORAGE_KEY_USERS, (val) => { remoteUpdateRef.current.users = true; setUsers(val && val.length > 0 ? val : SEED_USERS); });
+        unsubEcarts = fsSubscribe(STORAGE_KEY_ECARTS, (val) => { remoteUpdateRef.current.ecarts = val; setEcarts(val); });
+        unsubWeekly = fsSubscribe(STORAGE_KEY_WEEKLY, (val) => { remoteUpdateRef.current.weekly = val; setWeekly(val); });
+        unsubRoster = fsSubscribe(STORAGE_KEY_ROSTER, (val) => { const v = val && val.length > 0 ? val : SEED_ROSTER; remoteUpdateRef.current.roster = v; setRoster(v); });
+        unsubNcc = fsSubscribeChunked(STORAGE_KEY_NCC_RESPONSES, (val) => { const v = val || []; remoteUpdateRef.current.nccResponses = v; setNccResponses(v); });
+        unsubEval = fsSubscribeChunked(STORAGE_KEY_ALL_EVALUATIONS, (val) => { const v = val || []; remoteUpdateRef.current.allEvaluations = v; setAllEvaluations(v); });
+        unsubPlanActions = fsSubscribe(STORAGE_KEY_PLAN_ACTIONS, (val) => { const v = val || []; remoteUpdateRef.current.planActions = v; setPlanActions(v); });
+        unsubCriteres = fsSubscribeChunked(STORAGE_KEY_CRITERES_ECARTS, (val) => { const v = val || []; remoteUpdateRef.current.criteresEcarts = v; setCriteresEcarts(v); });
+        unsubItemsStats = fsSubscribe(STORAGE_KEY_ITEMS_STATS, (val) => { const v = val || []; remoteUpdateRef.current.itemsStats = v; setItemsStats(v); });
+        unsubUsers = fsSubscribe(STORAGE_KEY_USERS, (val) => { const v = val && val.length > 0 ? val : SEED_USERS; remoteUpdateRef.current.users = v; setUsers(v); });
       }
     })();
 
@@ -3372,26 +3376,26 @@ function App(){
   // Sauvegarde (debounce) à chaque changement, une fois le chargement initial fait —
   // mais PAS si ce changement provient uniquement d'une mise à jour reçue de Firestore
   // (sinon un onglet resté ouvert peut "renvoyer" une donnée périmée en boucle).
+  // Sauvegarde chaque donnée modifiée localement après une pause de 500ms d'inactivité —
+  // mais PAS si ce changement provient uniquement d'une mise à jour reçue de Firestore
+  // (sinon un onglet resté ouvert peut "renvoyer" une donnée périmée en boucle).
+  // Chaque clé est jugée indépendamment (comparaison de référence avec la dernière valeur
+  // reçue de Firestore) pour éviter qu'un écho reçu sur UNE clé n'annule la sauvegarde
+  // légitime en cours d'une AUTRE clé (c'était la cause d'une perte silencieuse de données).
   useEffect(() => {
     if (!loaded) return;
-    if (remoteUpdateRef.current.ecarts || remoteUpdateRef.current.weekly || remoteUpdateRef.current.roster
-        || remoteUpdateRef.current.nccResponses || remoteUpdateRef.current.allEvaluations || remoteUpdateRef.current.planActions
-        || remoteUpdateRef.current.criteresEcarts || remoteUpdateRef.current.itemsStats || remoteUpdateRef.current.users) {
-      remoteUpdateRef.current = { ecarts: false, weekly: false, roster: false, nccResponses: false, allEvaluations: false, planActions: false, criteresEcarts: false, itemsStats: false, users: false };
-      return;
-    }
     setSaving(true);
     const t = setTimeout(async () => {
       if (connStatus === "ok") {
-        await fsSave(STORAGE_KEY_ECARTS, ecarts);
-        await fsSave(STORAGE_KEY_WEEKLY, weekly);
-        await fsSave(STORAGE_KEY_ROSTER, roster);
-        await fsSaveChunked(STORAGE_KEY_NCC_RESPONSES, nccResponses);
-        await fsSaveChunked(STORAGE_KEY_ALL_EVALUATIONS, allEvaluations);
-        await fsSave(STORAGE_KEY_PLAN_ACTIONS, planActions);
-        await fsSaveChunked(STORAGE_KEY_CRITERES_ECARTS, criteresEcarts);
-        await fsSave(STORAGE_KEY_ITEMS_STATS, itemsStats);
-        await fsSave(STORAGE_KEY_USERS, users);
+        if (ecarts !== remoteUpdateRef.current.ecarts) { await fsSave(STORAGE_KEY_ECARTS, ecarts); remoteUpdateRef.current.ecarts = ecarts; }
+        if (weekly !== remoteUpdateRef.current.weekly) { await fsSave(STORAGE_KEY_WEEKLY, weekly); remoteUpdateRef.current.weekly = weekly; }
+        if (roster !== remoteUpdateRef.current.roster) { await fsSave(STORAGE_KEY_ROSTER, roster); remoteUpdateRef.current.roster = roster; }
+        if (nccResponses !== remoteUpdateRef.current.nccResponses) { await fsSaveChunked(STORAGE_KEY_NCC_RESPONSES, nccResponses); remoteUpdateRef.current.nccResponses = nccResponses; }
+        if (allEvaluations !== remoteUpdateRef.current.allEvaluations) { await fsSaveChunked(STORAGE_KEY_ALL_EVALUATIONS, allEvaluations); remoteUpdateRef.current.allEvaluations = allEvaluations; }
+        if (planActions !== remoteUpdateRef.current.planActions) { await fsSave(STORAGE_KEY_PLAN_ACTIONS, planActions); remoteUpdateRef.current.planActions = planActions; }
+        if (criteresEcarts !== remoteUpdateRef.current.criteresEcarts) { await fsSaveChunked(STORAGE_KEY_CRITERES_ECARTS, criteresEcarts); remoteUpdateRef.current.criteresEcarts = criteresEcarts; }
+        if (itemsStats !== remoteUpdateRef.current.itemsStats) { await fsSave(STORAGE_KEY_ITEMS_STATS, itemsStats); remoteUpdateRef.current.itemsStats = itemsStats; }
+        if (users !== remoteUpdateRef.current.users) { await fsSave(STORAGE_KEY_USERS, users); remoteUpdateRef.current.users = users; }
       }
       setSaving(false);
     }, 500);

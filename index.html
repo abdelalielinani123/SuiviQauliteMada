@@ -199,6 +199,7 @@ const STORAGE_KEY_ROSTER = "tersea_dashboard_roster";
 const STORAGE_KEY_NCC_RESPONSES = "tersea_dashboard_ncc_responses";
 const STORAGE_KEY_ALL_EVALUATIONS = "tersea_dashboard_all_evaluations";
 const STORAGE_KEY_PLAN_ACTIONS = "tersea_dashboard_plan_actions";
+const STORAGE_KEY_PLAN_ACTIONS_ARCHIVE = "tersea_dashboard_plan_actions_archive";
 const STORAGE_KEY_CRITERES_ECARTS = "tersea_dashboard_criteres_ecarts";
 const STORAGE_KEY_ITEMS_STATS = "tersea_dashboard_items_stats";
 const STORAGE_KEY_USERS = "tersea_dashboard_users";
@@ -471,6 +472,30 @@ function normalizeDateStr(d){
   const parsed = new Date(d);
   if (isNaN(parsed)) return "";
   return parsed.toISOString().slice(0,10);
+}
+
+/* Analyse du verbatim client pour en dégager une cause d'insatisfaction exploitable, plutôt que de
+   se limiter au motif brut (souvent générique) ou de simplement citer le verbatim. Classification par
+   familles de mots-clés (accent-insensible) ; si aucune famille ne matche, on retombe sur le motif
+   déclaré, puis sur "à qualifier manuellement" en dernier recours. */
+const NCC_CAUSE_KEYWORDS = [
+  { cause: "Délai de traitement / attente", mots: ["attente","delai","tarde","trop long","rappeler","rappel","patiente","longtemps"] },
+  { cause: "Remboursement / geste commercial", mots: ["rembours","geste commercial","dedommage","compensation","avoir"] },
+  { cause: "Qualité du produit", mots: ["produit","defectueux","abime","casse","perime","qualite du produit"] },
+  { cause: "Information erronée / erreur de traitement", mots: ["erreur","errone","mauvaise information","mal informe","incorrect","mal renseigne"] },
+  { cause: "Indisponibilité produit / stock", mots: ["stock","disponib","rupture","indisponible"] },
+  { cause: "Livraison", mots: ["livraison","livre","colis","transporteur"] },
+  { cause: "Accueil / courtoisie", mots: ["impoli","desagreable","accueil","courtoisie","froid","sec","irrespectueux"] },
+  { cause: "Problème technique / site ou application", mots: ["site","connexion","bug","application","compte","connecter","identifiant","mot de passe"] },
+  { cause: "Prix / facturation", mots: ["prix","facture","facture","paiement","tarif","surfacture"] },
+];
+function classifyVerbatimCause(verbatim, motif){
+  const text = `${verbatim||""} ${motif||""}`.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+  for (const c of NCC_CAUSE_KEYWORDS) {
+    if (c.mots.some((m) => text.includes(m))) return c.cause;
+  }
+  const m = (motif||"").trim();
+  return m || "Cause non identifiée (à qualifier manuellement)";
 }
 
 /* Détecte, directement à partir des évaluations brutes (toutes_evaluations), les cas en écart
@@ -856,7 +881,7 @@ function BarChartH({ data, labelKey, valueKey, height=220 }) {
   );
 }
 
-function LineChartMulti({ data, series, height=340, xKey="semaine" }) {
+function LineChartMulti({ data, series, height=340, xKey="semaine", forceNcc=false }) {
   const W = 700, H = height, padL = 30, padR = 20, padT = 20, padB = 50;
   const innerW = W - padL - padR, innerH = H - padT - padB;
   const stepX = innerW / (data.length - 1 || 1);
@@ -868,7 +893,7 @@ function LineChartMulti({ data, series, height=340, xKey="semaine" }) {
     let started = false;
     data.forEach((row, i) => {
       const v = row[key];
-      if (v === null || v === undefined) { started = false; return; }
+      if (v === null || v === undefined) return; // trou de donnée : on saute le point, le trait reste continu
       const cmd = started ? "L" : "M";
       d += `${cmd}${xFor(i)},${yFor(v)} `;
       started = true;
@@ -896,7 +921,7 @@ function LineChartMulti({ data, series, height=340, xKey="semaine" }) {
         {series.map((s) => data.map((row, i) => {
           const v = row[s.key];
           if (v === null || v === undefined) return null;
-          const label = s.key.includes("NCC") ? (v/10).toFixed(1) : (Number.isInteger(v) ? v : v.toFixed(1)) + "%";
+          const label = (forceNcc || s.key.includes("NCC")) ? (v/10).toFixed(1) : (Number.isInteger(v) ? v : v.toFixed(1)) + "%";
           return (
             <text key={"lbl"+s.key+i} x={xFor(i)} y={yFor(v)-7} fontSize="8.5" fontWeight="600" textAnchor="middle" fill={s.color}>
               {label}
@@ -1262,6 +1287,50 @@ function extractWeekNum(code){
    alimente le graphique dynamique du bloc "Résultats par conseiller et par équipe".
    La granularité de regroupement (jour vs semaine) s'adapte au filtre actif, pour que les périodes
    courtes (2-3 jours) affichent bien plusieurs points au lieu d'être noyées dans un seul point hebdomadaire. */
+/* Comble les trous du calendrier (jour/semaine/mois sans donnée) entre le premier et le dernier point
+   réellement disponibles, pour que l'axe du temps reste continu au lieu de "sauter" directement au
+   prochain point avec donnée. Les trous comblés n'ont pas de valeur -> le tracé s'interrompt visuellement
+   à cet endroit (repère visuel du vide) plutôt que de relier deux jours éloignés comme s'ils étaient adjacents. */
+function fillContinuousBuckets(rows, effectiveBucket){
+  if (!rows || rows.length < 2) return rows;
+  const byLabel = {};
+  rows.forEach((r) => { byLabel[r.label] = r; });
+
+  if (effectiveBucket === "jour") {
+    const sorted = [...rows].map((r) => r.label).sort();
+    const start = new Date(sorted[0]), end = new Date(sorted[sorted.length - 1]);
+    if (isNaN(start) || isNaN(end)) return rows;
+    const out = [];
+    for (let d = new Date(start); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
+      const label = d.toISOString().slice(0, 10);
+      out.push(byLabel[label] || { label });
+    }
+    return out;
+  }
+  if (effectiveBucket === "mois") {
+    const idxs = rows.map((r) => MONTH_ORDER.indexOf(r.label)).filter((i) => i >= 0);
+    if (!idxs.length) return rows;
+    const minI = Math.min(...idxs), maxI = Math.max(...idxs);
+    const out = [];
+    for (let i = minI; i <= maxI; i++) out.push(byLabel[MONTH_ORDER[i]] || { label: MONTH_ORDER[i] });
+    return out;
+  }
+  // semaine
+  const nums = rows.map((r) => extractWeekNum(r.label)).filter((n) => n < 999);
+  if (!nums.length) return rows;
+  const minN = Math.min(...nums), maxN = Math.max(...nums);
+  const out = [];
+  for (let n = minN; n <= maxN; n++) {
+    const label = `S${n}`;
+    out.push(byLabel[label] || { label });
+  }
+  return out;
+}
+
+/* Calcule la tendance d'un KPI, filtrée par manager(s) et par la période choisie (jour/semaine/mois/plage) —
+   alimente le graphique dynamique du bloc "Résultats par conseiller et par équipe".
+   La granularité de regroupement (jour vs semaine) s'adapte au filtre actif, pour que les périodes
+   courtes (2-3 jours) affichent bien plusieurs points au lieu d'être noyées dans un seul point hebdomadaire. */
 function computeKpiTrend(ecarts, allEvaluations, kpi, managers, roster, periodCtx){
   const { granBreakdown="tous", periodBreakdown=[], dateRange=null, bucketBy=null, conseiller="Tous" } = periodCtx || {};
   const evalsForKpi = (allEvaluations || []).filter((ev) => ev.indicateur === kpi);
@@ -1273,7 +1342,7 @@ function computeKpiTrend(ecarts, allEvaluations, kpi, managers, roster, periodCt
   const bucket = {};
 
   function inScope(conseillerFull){
-    if (conseiller !== "Tous" && displayConseillerName(conseillerFull) !== conseiller) return false;
+    if (conseiller !== "Tous" && normalizeName(conseillerFull) !== normalizeName(conseiller)) return false;
     if (!managers || managers.length === 0) return true;
     return managers.includes(getConseillerManagerFromRoster(conseillerFull, roster));
   }
@@ -1310,7 +1379,7 @@ function computeKpiTrend(ecarts, allEvaluations, kpi, managers, roster, periodCt
     });
   } else {
     ecarts.filter((e) => e.indicateur === kpi).forEach((e) => {
-      if (conseiller !== "Tous" && displayConseillerName(e.conseiller) !== conseiller) return;
+      if (conseiller !== "Tous" && normalizeName(e.conseiller) !== normalizeName(conseiller)) return;
       if (managers && managers.length > 0 && !managers.includes(getEffectiveManager(e, roster))) return;
       if (!inPeriod(e.date, e.semaine)) return;
       const key = bucketKey(e.date, e.semaine);
@@ -1325,9 +1394,10 @@ function computeKpiTrend(ecarts, allEvaluations, kpi, managers, roster, periodCt
   const rows = Object.values(bucket)
     .map((b) => ({ label: b.key, score: isNumericKpi ? (b.count ? Math.round((b.sum/b.count)*10)/10 : null) : (b.total ? Math.round((b.ok/b.total)*1000)/10 : null) }))
     .filter((b) => b.score !== null);
-  if (effectiveBucket === "jour") return rows.sort((a,b) => a.label.localeCompare(b.label));
-  if (effectiveBucket === "mois") return rows.sort((a,b) => MONTH_ORDER.indexOf(a.label) - MONTH_ORDER.indexOf(b.label));
-  return rows.sort((a,b) => extractWeekNum(a.label) - extractWeekNum(b.label));
+  const filled = fillContinuousBuckets(rows, effectiveBucket);
+  if (effectiveBucket === "jour") return filled.sort((a,b) => a.label.localeCompare(b.label));
+  if (effectiveBucket === "mois") return filled.sort((a,b) => MONTH_ORDER.indexOf(a.label) - MONTH_ORDER.indexOf(b.label));
+  return filled.sort((a,b) => extractWeekNum(a.label) - extractWeekNum(b.label));
 }
 
 /* Même logique que computeKpiTrend mais pour plusieurs indicateurs à la fois (graphique multi-séries
@@ -1342,7 +1412,27 @@ function computeMultiKpiTrend(ecarts, allEvaluations, kpis, managers, roster, pe
   });
   const bucketBy = periodCtx && periodCtx.bucketBy;
   const effectiveBucket = bucketBy || (periodCtx && (periodCtx.granBreakdown === "jour" || periodCtx.granBreakdown === "plage") ? "jour" : "semaine");
-  const rows = Object.values(byLabel);
+  const rows = fillContinuousBuckets(Object.values(byLabel), effectiveBucket);
+  if (effectiveBucket === "jour") return rows.sort((a,b) => a.label.localeCompare(b.label));
+  if (effectiveBucket === "mois") return rows.sort((a,b) => MONTH_ORDER.indexOf(a.label) - MONTH_ORDER.indexOf(b.label));
+  return rows.sort((a,b) => extractWeekNum(a.label) - extractWeekNum(b.label));
+}
+
+/* Même logique que computeKpiTrend mais découpée par conseiller (une série par conseiller sélectionné) —
+   alimente le graphique du bloc "Résultats par conseiller et par équipe" dès que 1+ conseiller est choisi.
+   Le score NCC (/10) est mis à l'échelle ×10 pour rester lisible sur le même axe 0-100 que les KPI en %. */
+function computeConseillerTrend(ecarts, allEvaluations, kpi, conseillers, managers, roster, periodCtx){
+  const isNumericNcc = kpi.includes("NCC");
+  const byLabel = {};
+  conseillers.forEach((cons) => {
+    computeKpiTrend(ecarts, allEvaluations, kpi, managers, roster, { ...periodCtx, conseiller: cons }).forEach((t) => {
+      if (!byLabel[t.label]) byLabel[t.label] = { label: t.label };
+      byLabel[t.label][cons] = isNumericNcc ? Math.round(t.score*100)/10 : t.score;
+    });
+  });
+  const bucketBy = periodCtx && periodCtx.bucketBy;
+  const effectiveBucket = bucketBy || (periodCtx && (periodCtx.granBreakdown === "jour" || periodCtx.granBreakdown === "plage") ? "jour" : "semaine");
+  const rows = fillContinuousBuckets(Object.values(byLabel), effectiveBucket);
   if (effectiveBucket === "jour") return rows.sort((a,b) => a.label.localeCompare(b.label));
   if (effectiveBucket === "mois") return rows.sort((a,b) => MONTH_ORDER.indexOf(a.label) - MONTH_ORDER.indexOf(b.label));
   return rows.sort((a,b) => extractWeekNum(a.label) - extractWeekNum(b.label));
@@ -1359,7 +1449,7 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
   const [fConseillerTop, setFConseillerTop] = useState("Tous");
   const [visibleIndicators, setVisibleIndicators] = useState(() => new Set(INDICATEURS));
   const [fManager, setFManager] = useState([]);
-  const [fConseiller, setFConseiller] = useState("Tous");
+  const [fConseiller, setFConseiller] = useState([]);
   const [onlyEnEcart, setOnlyEnEcart] = useState(false);
   const [kpiFilter, setKpiFilter] = useState(INDICATEURS[0]);
   const [granBreakdown, setGranBreakdown] = useState("tous");
@@ -1451,6 +1541,15 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
     () => computeConseillerScoreBreakdown(ecartsForBreakdown, roster, kpiFilter, allEvaluations, evalPeriodFilterFn),
     [ecartsForBreakdown, roster, kpiFilter, allEvaluations, evalPeriodFilterFn]
   );
+
+  /* Une série par conseiller sélectionné, pour comparer leur évolution sur le KPI et la période choisis. */
+  const conseillerTrend = useMemo(
+    () => fConseiller.length > 0
+      ? computeConseillerTrend(ecarts, allEvaluations, kpiFilter, fConseiller, fManager, roster, { granBreakdown, periodBreakdown, dateRange: dateRangeBreakdown })
+      : [],
+    [ecarts, allEvaluations, kpiFilter, fConseiller, fManager, roster, granBreakdown, periodBreakdown, dateRangeBreakdown]
+  );
+  const conseillerTrendSeries = fConseiller.map((c, i) => ({ key: c, color: SERIES_COLORS[i % SERIES_COLORS.length] }));
   const objectifKpi = `${OBJECTIFS[kpiFilter]}${kpiFilter.includes("NCC") ? "/10" : "%"}`;
   const kpiHasNumericScore = kpiFilter === "Hubicus Voix" || kpiFilter === "Hubicus Mail" || kpiFilter.includes("NCC");
 
@@ -1461,7 +1560,7 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
 
   const conseillerBreakdown = useMemo(() => conseillerBreakdownAll.filter((c) => {
     if (fManager.length > 0 && !fManager.includes(c.manager)) return false;
-    if (fConseiller !== "Tous" && c.conseiller !== fConseiller) return false;
+    if (fConseiller.length > 0 && !fConseiller.includes(c.conseiller)) return false;
     if (onlyEnEcart && !isEnEcart(c)) return false;
     return true;
   }).sort((a, b) => (a.avgScore ?? 999) - (b.avgScore ?? 999)), [conseillerBreakdownAll, fManager, fConseiller, onlyEnEcart, kpiFilter]);
@@ -1506,7 +1605,7 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
       </div>
 
       <div className="filters" style={{marginBottom:16}}>
-        <MultiSelectDropdown label="Manager :" options={managerOptions} selected={fManager} setSelected={(v) => { setFManager(v); setFConseiller("Tous"); setFConseillerTop("Tous"); }} />
+        <MultiSelectDropdown label="Manager :" options={managerOptions} selected={fManager} setSelected={(v) => { setFManager(v); setFConseiller([]); setFConseillerTop("Tous"); }} />
         <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600, marginLeft:8}}>Conseiller :</span>
         <select value={fConseillerTop} onChange={(e) => setFConseillerTop(e.target.value)}>
           <option>Tous</option>
@@ -1561,12 +1660,8 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
           <select value={kpiFilter} onChange={(e) => setKpiFilter(e.target.value)}>
             {INDICATEURS.map((k) => <option key={k}>{k}</option>)}
           </select>
-          <MultiSelectDropdown label="Manager :" options={managerOptions} selected={fManager} setSelected={(v) => { setFManager(v); setFConseiller("Tous"); }} />
-          <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600, marginLeft:8}}>Conseiller :</span>
-          <select value={fConseiller} onChange={(e) => setFConseiller(e.target.value)}>
-            <option>Tous</option>
-            {conseillerOptions.map((c) => <option key={c}>{c}</option>)}
-          </select>
+          <MultiSelectDropdown label="Manager :" options={managerOptions} selected={fManager} setSelected={(v) => { setFManager(v); setFConseiller([]); }} />
+          <MultiSelectDropdown label="Conseiller :" options={conseillerOptions} selected={fConseiller} setSelected={setFConseiller} />
         </div>
 
         <PeriodFilter
@@ -1588,6 +1683,25 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
             ? "Score calculé sur l'ensemble des évaluations importées pour cet indicateur (pas seulement celles en écart)."
             : "Aucune évaluation complète importée pour cet indicateur — le score affiché ci-dessous n'est que la moyenne des écarts déjà enregistrés (toujours sous l'objectif par construction). Importe le fichier d'évaluations complet (onglet Importer) pour un score exact par conseiller."}
           </div>
+        </div>
+
+        <div className="card" style={{marginBottom:16}}>
+          <div style={{fontSize:13, fontWeight:600, color:"var(--purpleDark)", marginBottom:10}}>
+            Évolution par conseiller — {kpiFilter}
+          </div>
+          {fConseiller.length === 0 ? (
+            <p style={{fontSize:13, color:"var(--textMuted)"}}>
+              Sélectionne un ou plusieurs conseillers ci-dessus pour afficher leur courbe d'évolution sur la période choisie.
+            </p>
+          ) : conseillerTrend.length > 1 ? (
+            <LineChartMulti data={conseillerTrend} series={conseillerTrendSeries} xKey="label" forceNcc={kpiFilter.includes("NCC")} />
+          ) : (
+            <p style={{fontSize:13, color:"var(--textMuted)"}}>
+              {conseillerTrend.length === 1
+                ? "Un seul point sur cette période — élargis le filtre de période pour voir une évolution."
+                : "Aucune donnée exploitable pour ce KPI, ces conseillers et cette période."}
+            </p>
+          )}
         </div>
 
         <div className="grid-2col" style={{display:"grid", gridTemplateColumns:"1.4fr 1fr", gap:16}}>
@@ -2661,6 +2775,55 @@ function getItemResult(itemsStats, indicateur, item, moisKey){
   const row = itemsStats.find((s) => s.indicateur === indicateur && s.item === item && s.mois === moisKey);
   return row || null;
 }
+/* Même chose mais agrégée sur un ensemble de mois (utilisé quand le filtre de période sélectionné
+   — jour/semaine/plage — touche un ou plusieurs mois) : pondère ok/total sur tous les mois concernés,
+   plutôt que de se limiter à un seul mois calendaire. */
+function getItemResultForPeriod(itemsStats, indicateur, item, monthKeys){
+  if (!itemsStats || !monthKeys || monthKeys.length === 0) return null;
+  const rows = itemsStats.filter((s) => s.indicateur === indicateur && s.item === item && monthKeys.includes(s.mois));
+  if (rows.length === 0) return null;
+  const total = rows.reduce((s,r) => s + (r.total||0), 0);
+  const ok = rows.reduce((s,r) => s + (r.ok||0), 0);
+  if (total === 0) return null;
+  return { taux: Math.round((ok/total)*1000)/10, ok, total };
+}
+
+/* Généralise une remarque d'évaluateur (texte libre, souvent très spécifique à un appel/produit) en une
+   phrase-cause standardisée et réutilisable — ex : "La CC devait informer le site préparateur concernant
+   les brocolis pourri" -> "Le conseiller n'a pas informé le bon interlocuteur d'un problème de qualité/état
+   du produit." Classification par familles de mots-clés ; retourne null si aucune famille ne matche
+   (l'appelant retombe alors sur un libellé générique par item). */
+const REMARQUE_GENERALIZATION_RULES = [
+  { motifs: ["informer","information","prevenir","communiquer"], andMotifs: ["perime","pourri","abime","casse","defectueux","avarie","qualite"],
+    generic: "Le conseiller n'a pas informé le bon interlocuteur d'un problème de qualité/état du produit." },
+  { motifs: ["informer","information","prevenir","communiquer"],
+    generic: "Le conseiller n'a pas transmis l'information nécessaire au bon interlocuteur." },
+  { motifs: ["perime","pourri","abime","casse","defectueux","avarie"],
+    generic: "Le conseiller n'a pas correctement traité un problème de qualité/état du produit." },
+  { motifs: ["reformul"], generic: "Le conseiller n'a pas reformulé la demande du client." },
+  { motifs: ["rembours","avoir","geste commercial","dedommage","compensation"],
+    generic: "Le conseiller n'a pas proposé le geste commercial adapté à la situation." },
+  { motifs: ["delai","attente","tarder","trop long","rapidemment","rapidement"],
+    generic: "Le conseiller n'a pas respecté le délai de traitement attendu." },
+  { motifs: ["identification","identifier"], generic: "Le conseiller n'a pas correctement identifié le client." },
+  { motifs: ["politesse","courtoisie","accueil","sourire","amabilite"],
+    generic: "Le conseiller n'a pas adopté la posture d'accueil/courtoisie attendue." },
+  { motifs: ["transfert","transferer","redirection","orienter","rediriger"],
+    generic: "Le conseiller n'a pas orienté correctement l'appel/le dossier vers le bon service." },
+  { motifs: ["procedure","process","etape"], generic: "Le conseiller n'a pas respecté la procédure attendue." },
+  { motifs: ["ecoute","attention","implication","adaptabilite","adapter"],
+    generic: "Le conseiller n'a pas fait preuve d'écoute active/adaptabilité suffisante." },
+  { motifs: ["questionnement","question"], generic: "Le conseiller n'a pas posé les questions nécessaires pour cerner le besoin client." },
+];
+function synthesizeRemarque(remarque){
+  const text = (remarque||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+  for (const r of REMARQUE_GENERALIZATION_RULES) {
+    if (!r.motifs.some((m) => text.includes(m))) continue;
+    if (r.andMotifs && !r.andMotifs.some((m) => text.includes(m))) continue;
+    return r.generic;
+  }
+  return null;
+}
 
 const MOIS_FR = {"01":"Janvier","02":"Février","03":"Mars","04":"Avril","05":"Mai","06":"Juin","07":"Juillet","08":"Août","09":"Septembre","10":"Octobre","11":"Novembre","12":"Décembre"};
 /* Clé "AAAA-MM" -> libellé français, dérivé directement de la date (plus fiable que la correspondance semaine -> mois). */
@@ -2748,43 +2911,109 @@ function addDaysISO(dateStr, days){
    VUE : ANALYSE (par indicateur)
    ============================================================ */
 function AnalyseView({ ecarts, roster, allEvaluations, nccResponses, criteresEcarts, itemsStats }){
-  const isItemKpi = (k) => k === "Hubicus Voix" || k === "Hubicus Mail" || k === "Conformité Process (Auchan)" || k === "Conformité Process (Interne)" || k === "Conformité Transfert" || k.includes("NCC");
-  const availableMonths = useMemo(
-    () => computeAvailableMonths(allEvaluations, ecarts, nccResponses, criteresEcarts),
-    [allEvaluations, ecarts, nccResponses, criteresEcarts]
-  );
-  const defaultMonthKey = useMemo(() => {
-    const juillet = availableMonths.find((m) => m.key.endsWith("-07"));
-    return juillet ? juillet.key : (availableMonths[availableMonths.length-1]?.key || "");
-  }, [availableMonths]);
+  // NCC a désormais son propre bloc d'analyse (causes déduites du verbatim) — il ne rejoint plus
+  // le rendu générique "décomposition par item" des indicateurs de conformité/Hubicus.
+  const isItemKpi = (k) => k === "Hubicus Voix" || k === "Hubicus Mail" || k === "Conformité Process (Auchan)" || k === "Conformité Process (Interne)" || k === "Conformité Transfert";
 
   const [kpiFilter, setKpiFilter] = useState(INDICATEURS[0]);
-  const [moisKey, setMoisKey] = useState(defaultMonthKey);
-  useEffect(() => { if (!moisKey && defaultMonthKey) setMoisKey(defaultMonthKey); }, [defaultMonthKey]);
   const isNcc = kpiFilter.includes("NCC");
-  const monthFilterFn = useMemo(() => (moisKey ? (ev) => monthKeyFromDate(ev.date) === moisKey : null), [moisKey]);
 
-  const ecartsForMonth = useMemo(() => moisKey ? ecarts.filter((e) => monthKeyFromDate(e.date) === moisKey) : ecarts, [ecarts, moisKey]);
-  const nccForMonth = useMemo(() => moisKey ? (nccResponses||[]).filter((r) => monthKeyFromDate(r.date) === moisKey) : (nccResponses||[]), [nccResponses, moisKey]);
-  const criteresForMonth = useMemo(
-    () => (criteresEcarts||[]).filter((c) => c.indicateur === kpiFilter && (!moisKey || monthKeyFromDate(c.date) === moisKey)),
-    [criteresEcarts, kpiFilter, moisKey]
+  // Filtre de période complet (Jour / Semaine / Mois / Plage de dates), comme dans les autres vues.
+  const dayOptionsAn = useMemo(() => {
+    const set = new Set();
+    [ecarts, allEvaluations, criteresEcarts, nccResponses].forEach((arr) => (arr||[]).forEach((e) => { if (e.date) set.add(e.date); }));
+    return [...set].sort();
+  }, [ecarts, allEvaluations, criteresEcarts, nccResponses]);
+  const weekOptionsAn = useMemo(() => {
+    const set = new Set();
+    [ecarts, allEvaluations, criteresEcarts].forEach((arr) => (arr||[]).forEach((e) => { const c = extractWeekCode(e.semaine); if (c) set.add(c); }));
+    return [...set].sort((a,b) => extractWeekNum(a) - extractWeekNum(b));
+  }, [ecarts, allEvaluations, criteresEcarts]);
+  const monthOptionsAn = useMemo(() => {
+    const set = new Set();
+    [ecarts, allEvaluations, criteresEcarts, nccResponses].forEach((arr) => (arr||[]).forEach((e) => { const k = monthKeyFromDate(e.date); if (k) set.add(k); }));
+    return [...set].sort();
+  }, [ecarts, allEvaluations, criteresEcarts, nccResponses]);
+  const defaultMonthKey = useMemo(() => {
+    const juillet = monthOptionsAn.find((k) => k.endsWith("-07"));
+    return juillet || monthOptionsAn[monthOptionsAn.length-1] || "";
+  }, [monthOptionsAn]);
+
+  const [granPeriode, setGranPeriode] = useState("mois");
+  const [periodeValue, setPeriodeValue] = useState([]);
+  const [dateRangePeriode, setDateRangePeriode] = useState({ start:"", end:"" });
+  useEffect(() => { if (granPeriode === "mois" && periodeValue.length === 0 && defaultMonthKey) setPeriodeValue([defaultMonthKey]); }, [defaultMonthKey]);
+
+  function inPeriodAn(dateStr, semaineStr){
+    if (granPeriode === "plage") return dateInRange(dateStr, dateRangePeriode);
+    if (granPeriode === "tous" || periodeValue.length === 0) return true;
+    if (granPeriode === "jour") return periodeValue.includes(dateStr);
+    if (granPeriode === "semaine") return periodeValue.includes(extractWeekCode(semaineStr));
+    if (granPeriode === "mois") return periodeValue.includes(monthKeyFromDate(dateStr));
+    return true;
+  }
+  function periodeLabel(){
+    if (granPeriode === "tous" || (granPeriode !== "plage" && periodeValue.length === 0)) return "toutes périodes";
+    if (granPeriode === "mois") return periodeValue.map(monthLabelFromKey).join(", ");
+    if (granPeriode === "plage") return `du ${dateRangePeriode.start || "…"} au ${dateRangePeriode.end || "…"}`;
+    return periodeValue.join(", ");
+  }
+
+  // Filtres Manager (multi) + Ancienneté (Nouveau/Ancien), appliqués à l'ensemble des blocs de cette vue.
+  const managerOptions = useMemo(() => {
+    const set = new Set((roster || []).map((r) => r.manager).filter((m) => m && m !== "RAS"));
+    return [...set].sort();
+  }, [roster]);
+  const [fManager, setFManager] = useState([]);
+  const [fAnciennete, setFAnciennete] = useState("Tous");
+  function passesFilters(rawOrDisplayConseiller){
+    const entry = findRosterEntry(rawOrDisplayConseiller, roster);
+    if (fManager.length > 0 && (!entry || !fManager.includes(entry.manager))) return false;
+    if (fAnciennete !== "Tous" && (!entry || entry.statut !== fAnciennete)) return false;
+    return true;
+  }
+
+  const ecartsForMonth = useMemo(
+    () => ecarts.filter((e) => inPeriodAn(e.date, e.semaine) && passesFilters(e.conseiller)),
+    [ecarts, granPeriode, periodeValue, dateRangePeriode, fManager, fAnciennete, roster]
   );
+  const evalsForMonth = useMemo(
+    () => (allEvaluations||[]).filter((ev) => inPeriodAn(ev.date, ev.semaine) && passesFilters(ev.conseiller)),
+    [allEvaluations, granPeriode, periodeValue, dateRangePeriode, fManager, fAnciennete, roster]
+  );
+  const nccForMonth = useMemo(
+    () => (nccResponses||[]).filter((r) => inPeriodAn(r.date, r.semaine || null) && passesFilters(r.conseillerFull || r.conseiller)),
+    [nccResponses, granPeriode, periodeValue, dateRangePeriode, fManager, fAnciennete, roster]
+  );
+  const criteresForMonth = useMemo(
+    () => (criteresEcarts||[]).filter((c) => c.indicateur === kpiFilter && inPeriodAn(c.date, c.semaine) && passesFilters(c.conseiller)),
+    [criteresEcarts, kpiFilter, granPeriode, periodeValue, dateRangePeriode, fManager, fAnciennete, roster]
+  );
+  // Mois calendaires (clé ISO "AAAA-MM") réellement couverts par la sélection en cours — sert à agréger
+  // itemsStats (précalculé par mois) quel que soit le type de filtre de période choisi.
+  const monthKeysInScope = useMemo(() => {
+    const set = new Set();
+    [ecartsForMonth, evalsForMonth, criteresForMonth].forEach((arr) => arr.forEach((e) => { const k = monthKeyFromDate(e.date); if (k) set.add(k); }));
+    return [...set];
+  }, [ecartsForMonth, evalsForMonth, criteresForMonth]);
 
-  const realise = useMemo(() => computeGlobalKpiRealise(ecartsForMonth, (allEvaluations||[]).filter((ev) => !moisKey || monthKeyFromDate(ev.date) === moisKey), kpiFilter), [ecartsForMonth, allEvaluations, kpiFilter, moisKey]);
+  const realise = useMemo(() => computeGlobalKpiRealise(ecartsForMonth, evalsForMonth, kpiFilter), [ecartsForMonth, evalsForMonth, kpiFilter]);
   const objectif = OBJECTIFS[kpiFilter];
   const enEcart = realise !== null && realise < objectif;
 
   const conseillerBreakdown = useMemo(
-    () => computeConseillerScoreBreakdown(ecartsForMonth, roster, kpiFilter, allEvaluations, monthFilterFn),
-    [ecartsForMonth, roster, kpiFilter, allEvaluations, monthFilterFn]
+    () => computeConseillerScoreBreakdown(ecartsForMonth, roster, kpiFilter, allEvaluations, (ev) => inPeriodAn(ev.date, ev.semaine))
+      .filter((c) => passesFilters(c.conseiller)),
+    [ecartsForMonth, roster, kpiFilter, allEvaluations, granPeriode, periodeValue, dateRangePeriode, fManager, fAnciennete]
   );
   const ccsEnEcart = useMemo(() => conseillerBreakdown
     .filter((c) => c.hasRawData ? (c.avgScore !== null && c.avgScore < objectif) : c.total > 0)
     .sort((a,b) => (a.avgScore ?? 999) - (b.avgScore ?? 999)), [conseillerBreakdown, objectif]);
 
-  // Décomposition par item de grille qualité (Hubicus Voix/Mail uniquement — seul indicateur avec
-  // un détail par critère disponible dans les fichiers source).
+  // Décomposition par item de grille qualité — pour Hubicus Voix/Mail et les trois indicateurs de
+  // conformité (Transfert, Process Auchan, Process Interne) : résultat par item vs objectif, remarques
+  // les plus fréquentes (texte réel de l'évaluateur, pas de reformulation) et liste des ccs concernés.
+  const isConformiteKpi = (k) => k === "Conformité Process (Auchan)" || k === "Conformité Process (Interne)" || k === "Conformité Transfert";
   const itemsBreakdown = useMemo(() => {
     if (!isItemKpi(kpiFilter)) return [];
     const byItem = {};
@@ -2804,19 +3033,26 @@ function AnalyseView({ ecarts, roster, allEvaluations, nccResponses, criteresEca
     })).sort((a,b) => b.count - a.count);
   }, [criteresForMonth, kpiFilter, roster]);
 
-  // NCC : motif structuré disponible directement dans les réponses de satisfaction.
+  // NCC : la cause n'est plus le simple motif brut — chaque verbatim est analysé (mots-clés) pour en
+  // déduire une cause d'insatisfaction exploitable, avec la liste des conseillers concernés par cause.
   const causesNcc = useMemo(() => {
     if (!isNcc) return [];
     const bad = nccForMonth.filter((r) => (r.scoreNCC !== null && r.scoreNCC <= 7) || (r.scoreNPS !== null && r.scoreNPS <= 7));
-    const byMotif = {};
+    const byCause = {};
     bad.forEach((r) => {
-      const m = (r.motif || "").trim() || "Motif non renseigné";
-      if (!byMotif[m]) byMotif[m] = { motif: m, count: 0, exemples: [] };
-      byMotif[m].count += 1;
-      if (byMotif[m].exemples.length < 3 && r.verbatim) byMotif[m].exemples.push({ conseiller: r.conseiller, verbatim: r.verbatim });
+      const cause = classifyVerbatimCause(r.verbatim, r.motif);
+      if (!byCause[cause]) byCause[cause] = { cause, count: 0, exemples: [], ccs: {} };
+      const b = byCause[cause];
+      b.count += 1;
+      if (b.exemples.length < 3 && r.verbatim) b.exemples.push({ conseiller: r.conseiller, verbatim: r.verbatim, ndemande: r.ndemande || null });
+      const cName = r.conseiller || displayConseillerName(r.conseillerFull || "");
+      if (!b.ccs[cName]) b.ccs[cName] = { conseiller: cName, manager: getConseillerManagerFromRoster(r.conseillerFull || cName, roster) || "Non trouvé", count: 0 };
+      b.ccs[cName].count += 1;
     });
-    return Object.values(byMotif).sort((a,b) => b.count - a.count);
-  }, [isNcc, nccForMonth]);
+    return Object.values(byCause).map((b) => ({
+      ...b, ccs: Object.values(b.ccs).sort((a,b2) => b2.count - a.count),
+    })).sort((a,b) => b.count - a.count);
+  }, [isNcc, nccForMonth, roster]);
 
   const remarquesEvaluateur = useMemo(() => {
     if (isNcc || isItemKpi(kpiFilter)) return [];
@@ -2835,11 +3071,19 @@ function AnalyseView({ ecarts, roster, allEvaluations, nccResponses, criteresEca
         <select value={kpiFilter} onChange={(e) => setKpiFilter(e.target.value)}>
           {INDICATEURS.map((k) => <option key={k}>{k}</option>)}
         </select>
-        <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600, marginLeft:8}}>Mois de référence :</span>
-        <select value={moisKey} onChange={(e) => setMoisKey(e.target.value)}>
-          {availableMonths.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
+        <MultiSelectDropdown label="Manager :" options={managerOptions} selected={fManager} setSelected={setFManager} />
+        <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600, marginLeft:8}}>Ancienneté :</span>
+        <select value={fAnciennete} onChange={(e) => setFAnciennete(e.target.value)}>
+          {["Tous","Nouveau","Ancien"].map((s) => <option key={s}>{s}</option>)}
         </select>
       </div>
+
+      <PeriodFilter
+        granularity={granPeriode} setGranularity={setGranPeriode}
+        value={periodeValue} setValue={setPeriodeValue}
+        weekOptions={weekOptionsAn} monthOptions={monthOptionsAn} dayOptions={dayOptionsAn}
+        allowRange={true} dateRange={dateRangePeriode} setDateRange={setDateRangePeriode}
+      />
 
       <div className="stat-row" style={{display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:16, marginBottom:20}}>
         <StatCard label="Réalisé" value={formatKpiValue(kpiFilter, realise)} tone={enEcart ? "bad" : "good"} />
@@ -2847,22 +3091,24 @@ function AnalyseView({ ecarts, roster, allEvaluations, nccResponses, criteresEca
         <StatCard label="Conseillers en écart" value={ccsEnEcart.length} tone={ccsEnEcart.length>0 ? "bad" : "good"} sub={`sur ${conseillerBreakdown.length} suivis`} />
       </div>
 
-      {isItemKpi(kpiFilter) ? (
+      {isItemKpi(kpiFilter) && !isConformiteKpi(kpiFilter) ? (
+        // Hubicus Voix / Hubicus Mail : on reste sur l'ancien format — un seul bloc combinant
+        // item + résultat vs objectif + remarques les plus fréquentes + conseillers concernés.
         <div className="card" style={{marginBottom:20}}>
           <div style={{fontSize:13, fontWeight:600, color:"var(--purpleDark)", marginBottom:12}}>
-            Causes de non-performance par item ({monthLabelFromKey(moisKey||defaultMonthKey||"")})
+            Causes de non-performance par item ({periodeLabel()})
           </div>
-          {itemsBreakdown.length === 0 ? <p style={{fontSize:13, color:"var(--textMuted)"}}>Aucun écart par item sur ce mois.</p> : (
+          {itemsBreakdown.length === 0 ? <p style={{fontSize:13, color:"var(--textMuted)"}}>Aucun écart par item sur cette période.</p> : (
             <div style={{display:"flex", flexDirection:"column", gap:16}}>
               {itemsBreakdown.map((it) => {
-                const res = getItemResult(itemsStats, kpiFilter, it.item, moisKey||defaultMonthKey);
+                const res = getItemResultForPeriod(itemsStats, kpiFilter, it.item, monthKeysInScope);
                 return (
                 <div key={it.item} style={{borderLeft:"3px solid var(--red)", paddingLeft:12}}>
                   <div style={{fontWeight:600, fontSize:13, marginBottom:4, display:"flex", alignItems:"center", gap:10}}>
                     <span>{it.item} — {it.count} écart(s)</span>
                     {res && res.taux !== null && (
                       <span className="badge" style={{background: res.taux < OBJECTIFS[kpiFilter] ? "var(--redSoft)" : "var(--greenSoft, #E3F5EC)", color: res.taux < OBJECTIFS[kpiFilter] ? "var(--red)" : "var(--green)"}}>
-                        Résultat : {res.taux}% ({res.ok}/{res.total})
+                        Résultat : {res.taux}% ({res.ok}/{res.total}) — objectif {OBJECTIFS[kpiFilter]}%
                       </span>
                     )}
                   </div>
@@ -2885,49 +3131,143 @@ function AnalyseView({ ecarts, roster, allEvaluations, nccResponses, criteresEca
             </div>
           )}
         </div>
+      ) : isItemKpi(kpiFilter) ? (
+        // Conformité Process (Auchan/Interne) et Conformité Transfert : deux blocs séparés — le résultat
+        // par item vs objectif d'une part, les remarques réelles de l'évaluateur d'autre part (mêmes
+        // données qu'avant, simplement présentées dans deux cartes distinctes plutôt qu'une reformulation).
+        <>
+        <div className="card" style={{marginBottom:20}}>
+          <div style={{fontSize:13, fontWeight:600, color:"var(--purpleDark)", marginBottom:12}}>
+            Résultats par item vs objectif ({periodeLabel()})
+          </div>
+          {itemsBreakdown.length === 0 ? <p style={{fontSize:13, color:"var(--textMuted)"}}>Aucun écart par item sur cette période.</p> : (
+            <div style={{display:"flex", flexDirection:"column", gap:16}}>
+              {itemsBreakdown.map((it) => {
+                const res = getItemResultForPeriod(itemsStats, kpiFilter, it.item, monthKeysInScope);
+                return (
+                <div key={it.item} style={{borderLeft:"3px solid var(--red)", paddingLeft:12}}>
+                  <div style={{fontWeight:600, fontSize:13, marginBottom:4, display:"flex", alignItems:"center", gap:10}}>
+                    <span>{it.item} — {it.count} écart(s)</span>
+                    {res && res.taux !== null && (
+                      <span className="badge" style={{background: res.taux < OBJECTIFS[kpiFilter] ? "var(--redSoft)" : "var(--greenSoft, #E3F5EC)", color: res.taux < OBJECTIFS[kpiFilter] ? "var(--red)" : "var(--green)"}}>
+                        Résultat : {res.taux}% ({res.ok}/{res.total}) — objectif {OBJECTIFS[kpiFilter]}%
+                      </span>
+                    )}
+                  </div>
+                  <details>
+                    <summary style={{fontSize:12, color:"var(--purple)", cursor:"pointer"}}>Conseillers en écart sur cet item ({it.ccs.length})</summary>
+                    <div style={{marginTop:6, display:"flex", flexWrap:"wrap", gap:6}}>
+                      {it.ccs.map((c) => (
+                        <span key={c.conseiller} className="badge" style={{background:"var(--redSoft)", color:"var(--red)"}}>
+                          {c.conseiller} ({c.manager}) — {c.count}
+                        </span>
+                      ))}
+                    </div>
+                  </details>
+                </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="card" style={{marginBottom:20}}>
+          <div style={{fontSize:13, fontWeight:600, color:"var(--purpleDark)", marginBottom:12}}>
+            Remarques des évaluateurs par item ({periodeLabel()})
+          </div>
+          {itemsBreakdown.length === 0 ? <p style={{fontSize:13, color:"var(--textMuted)"}}>Aucune remarque sur cette période.</p> : (
+            <div style={{display:"flex", flexDirection:"column", gap:12}}>
+              {itemsBreakdown.map((it) => (
+                <div key={it.item} style={{borderLeft:"3px solid var(--purple)", paddingLeft:12}}>
+                  <div style={{fontWeight:600, fontSize:13, marginBottom:4}}>{it.item}</div>
+                  <div style={{fontSize:12, color:"var(--textMuted)"}}>
+                    {it.remarques.map((r) => `${r.texte} (${r.n})`).join(" · ")}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        </>
+      ) : isNcc ? (
+        <div className="card" style={{marginBottom:20}}>
+          <div style={{fontSize:13, fontWeight:600, color:"var(--purpleDark)", marginBottom:6}}>
+            Causes d'insatisfaction client — analyse du verbatim ({periodeLabel()})
+          </div>
+          <div className="notice info" style={{marginBottom:12}}>
+            <span className="ic">ℹ</span>
+            <div>Chaque verbatim est analysé (au-delà du simple motif déclaré) pour en déduire la cause réelle
+            d'insatisfaction du client. Les causes non reconnues par l'analyse retombent sur le motif déclaré.</div>
+          </div>
+          {causesNcc.length === 0 ? <p style={{fontSize:13, color:"var(--textMuted)"}}>Aucune insatisfaction (NCC/NPS ≤ 7) sur cette période.</p> : (
+            <>
+            <div style={{marginBottom:18}}>
+              <div style={{fontSize:12, fontWeight:600, color:"var(--textMuted)", marginBottom:8}}>Poids des causes d'insatisfaction</div>
+              {(() => {
+                const maxCount = Math.max(...causesNcc.map((c) => c.count));
+                return causesNcc.map((c) => (
+                  <div key={c.cause} style={{display:"flex", alignItems:"center", gap:8, marginBottom:6}}>
+                    <div style={{width:220, fontSize:11, color:"var(--textMuted)", flexShrink:0, textAlign:"right"}}>{c.cause}</div>
+                    <div style={{flex:1, background:"var(--grey)", borderRadius:4, overflow:"hidden"}}>
+                      <div style={{width:`${(c.count/maxCount)*100}%`, background:"var(--red)", color:"#fff", fontSize:11, padding:"3px 6px", whiteSpace:"nowrap", minWidth:20}}>
+                        {c.count}
+                      </div>
+                    </div>
+                  </div>
+                ));
+              })()}
+            </div>
+            <div style={{display:"flex", flexDirection:"column", gap:16}}>
+              {causesNcc.map((c) => (
+                <div key={c.cause} style={{borderLeft:"3px solid var(--red)", paddingLeft:12}}>
+                  <div style={{fontWeight:600, fontSize:13, marginBottom:4}}>{c.cause} — {c.count} cas</div>
+                  {c.exemples.map((ex, i) => (
+                    <div key={i} style={{fontSize:12, color:"var(--textMuted)", marginTop:4}}>
+                      « {ex.verbatim} » — {ex.conseiller}{ex.ndemande ? ` (Demande n° ${ex.ndemande})` : ""}
+                    </div>
+                  ))}
+                  <details style={{marginTop:6}}>
+                    <summary style={{fontSize:12, color:"var(--purple)", cursor:"pointer"}}>Conseillers concernés par cette cause ({c.ccs.length})</summary>
+                    <div style={{marginTop:6, display:"flex", flexWrap:"wrap", gap:6}}>
+                      {c.ccs.map((cc) => (
+                        <span key={cc.conseiller} className="badge" style={{background:"var(--redSoft)", color:"var(--red)"}}>
+                          {cc.conseiller} ({cc.manager}) — {cc.count}
+                        </span>
+                      ))}
+                    </div>
+                  </details>
+                </div>
+              ))}
+            </div>
+            </>
+          )}
+        </div>
       ) : (
         <div className="card" style={{marginBottom:20}}>
           <div style={{fontSize:13, fontWeight:600, color:"var(--purpleDark)", marginBottom:12}}>
-            {isNcc ? "Causes de non-performance (motifs d'insatisfaction)" : "Remarques des évaluateurs (constats)"}
+            Remarques des évaluateurs (constats)
           </div>
-          {isNcc ? (
-            causesNcc.length === 0 ? <p style={{fontSize:13, color:"var(--textMuted)"}}>Aucune insatisfaction (NCC/NPS ≤ 7) sur ce mois.</p> : (
-              <div style={{display:"flex", flexDirection:"column", gap:12}}>
-                {causesNcc.map((c) => (
-                  <div key={c.motif} style={{borderLeft:"3px solid var(--red)", paddingLeft:12}}>
-                    <div style={{fontWeight:600, fontSize:13}}>{c.motif} — {c.count} cas</div>
-                    {c.exemples.map((ex, i) => (
-                      <div key={i} style={{fontSize:12, color:"var(--textMuted)", marginTop:4}}>« {ex.verbatim} » — {ex.conseiller}</div>
-                    ))}
-                  </div>
-                ))}
-              </div>
-            )
-          ) : (
-            <>
-              <div className="notice info" style={{marginBottom:12}}>
-                <span className="ic">ℹ</span>
-                <div>Cet indicateur n'a pas de décomposition par item disponible dans les fichiers source —
-                voici la synthèse des constats détaillés saisis par les évaluateurs lors du débriefing, les plus récents en premier.</div>
-              </div>
-              {remarquesEvaluateur.length === 0 ? <p style={{fontSize:13, color:"var(--textMuted)"}}>Aucun constat disponible pour cet indicateur sur ce mois.</p> : (
-                <div style={{overflowX:"auto"}}>
-                  <table>
-                    <thead><tr>{["Conseiller","Date","Écart constaté","Constat de l'évaluateur"].map((h) => <th key={h}>{h}</th>)}</tr></thead>
-                    <tbody>
-                      {remarquesEvaluateur.map((e) => (
-                        <tr key={e.id}>
-                          <td>{e.conseiller}</td>
-                          <td style={{whiteSpace:"nowrap"}}>{e.date || "—"}</td>
-                          <td style={{fontSize:12}}>{e.ecart}</td>
-                          <td style={{fontSize:12}}>{e.constat}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </>
+          <div className="notice info" style={{marginBottom:12}}>
+            <span className="ic">ℹ</span>
+            <div>Cet indicateur n'a pas de décomposition par item disponible dans les fichiers source —
+            voici la synthèse des constats détaillés saisis par les évaluateurs lors du débriefing, les plus récents en premier.</div>
+          </div>
+          {remarquesEvaluateur.length === 0 ? <p style={{fontSize:13, color:"var(--textMuted)"}}>Aucun constat disponible pour cet indicateur sur ce mois.</p> : (
+            <div style={{overflowX:"auto"}}>
+              <table>
+                <thead><tr>{["Conseiller","Date","Écart constaté","Constat de l'évaluateur"].map((h) => <th key={h}>{h}</th>)}</tr></thead>
+                <tbody>
+                  {remarquesEvaluateur.map((e) => (
+                    <tr key={e.id}>
+                      <td>{e.conseiller}</td>
+                      <td style={{whiteSpace:"nowrap"}}>{e.date || "—"}</td>
+                      <td style={{fontSize:12}}>{e.ecart}</td>
+                      <td style={{fontSize:12}}>{e.constat}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
       )}
@@ -2963,7 +3303,7 @@ function AnalyseView({ ecarts, roster, allEvaluations, nccResponses, criteresEca
 /* ============================================================
    VUE : PLAN D'ACTION (par indicateur)
    ============================================================ */
-function PlanActionView({ ecarts, roster, allEvaluations, criteresEcarts, itemsStats, planActions, setPlanActions, auth }){
+function PlanActionView({ ecarts, roster, allEvaluations, criteresEcarts, itemsStats, planActions, setPlanActions, planActionsArchive, setPlanActionsArchive, auth }){
   const isAdmin = auth.role === "admin";
   const isOwnerOf = (p) => !isAdmin && auth.ownerName && p.owner === auth.ownerName;
   const canEdit = (p) => isAdmin || isOwnerOf(p);
@@ -2972,29 +3312,85 @@ function PlanActionView({ ecarts, roster, allEvaluations, criteresEcarts, itemsS
   const [editingId, setEditingId] = useState(null);
   const blankForm = { conseillerCible:"Toute l'équipe", itemImpacte:"", constat:"", actionCorrective:"", owner:"", statut:"À lancer", echeance:"" };
   const [form, setForm] = useState(blankForm);
+  const [showArchive, setShowArchive] = useState(false);
 
-  const availableMonths = useMemo(
-    () => computeAvailableMonths(allEvaluations, ecarts, criteresEcarts),
-    [allEvaluations, ecarts, criteresEcarts]
-  );
+  const dayOptionsAn = useMemo(() => {
+    const set = new Set();
+    [ecarts, allEvaluations, criteresEcarts].forEach((arr) => (arr||[]).forEach((e) => { if (e.date) set.add(e.date); }));
+    return [...set].sort();
+  }, [ecarts, allEvaluations, criteresEcarts]);
+  const weekOptionsAn = useMemo(() => {
+    const set = new Set();
+    [ecarts, allEvaluations, criteresEcarts].forEach((arr) => (arr||[]).forEach((e) => { const c = extractWeekCode(e.semaine); if (c) set.add(c); }));
+    return [...set].sort((a,b) => extractWeekNum(a) - extractWeekNum(b));
+  }, [ecarts, allEvaluations, criteresEcarts]);
+  const monthOptionsAn = useMemo(() => {
+    const set = new Set();
+    [ecarts, allEvaluations, criteresEcarts].forEach((arr) => (arr||[]).forEach((e) => { const k = monthKeyFromDate(e.date); if (k) set.add(k); }));
+    return [...set].sort();
+  }, [ecarts, allEvaluations, criteresEcarts]);
   const defaultMonthKey = useMemo(() => {
-    const juillet = availableMonths.find((m) => m.key.endsWith("-07"));
-    return juillet ? juillet.key : (availableMonths[availableMonths.length-1]?.key || "");
-  }, [availableMonths]);
-  const [moisKey, setMoisKey] = useState(defaultMonthKey);
-  useEffect(() => { if (!moisKey && defaultMonthKey) setMoisKey(defaultMonthKey); }, [defaultMonthKey]);
+    const juillet = monthOptionsAn.find((k) => k.endsWith("-07"));
+    return juillet || monthOptionsAn[monthOptionsAn.length-1] || "";
+  }, [monthOptionsAn]);
+
+  const [granPeriode, setGranPeriode] = useState("mois");
+  const [periodeValue, setPeriodeValue] = useState([]);
+  const [dateRangePeriode, setDateRangePeriode] = useState({ start:"", end:"" });
+  useEffect(() => { if (granPeriode === "mois" && periodeValue.length === 0 && defaultMonthKey) setPeriodeValue([defaultMonthKey]); }, [defaultMonthKey]);
+
+  function inPeriodAn(dateStr, semaineStr){
+    if (granPeriode === "plage") return dateInRange(dateStr, dateRangePeriode);
+    if (granPeriode === "tous" || periodeValue.length === 0) return true;
+    if (granPeriode === "jour") return periodeValue.includes(dateStr);
+    if (granPeriode === "semaine") return periodeValue.includes(extractWeekCode(semaineStr));
+    if (granPeriode === "mois") return periodeValue.includes(monthKeyFromDate(dateStr));
+    return true;
+  }
+  function periodeLabel(){
+    if (granPeriode === "tous" || (granPeriode !== "plage" && periodeValue.length === 0)) return "toutes périodes";
+    if (granPeriode === "mois") return periodeValue.map(monthLabelFromKey).join(", ");
+    if (granPeriode === "plage") return `du ${dateRangePeriode.start || "…"} au ${dateRangePeriode.end || "…"}`;
+    return periodeValue.join(", ");
+  }
+
+  // Filtres Manager (multi) + Ancienneté — mêmes filtres que la vue Analyse, appliqués aux conseillers ciblés
+  // (les actions "Toute l'équipe" restent toujours visibles car elles ne ciblent personne en particulier).
+  const managerOptions = useMemo(() => {
+    const set = new Set((roster || []).map((r) => r.manager).filter((m) => m && m !== "RAS"));
+    return [...set].sort();
+  }, [roster]);
+  const [fManager, setFManager] = useState([]);
+  const [fAnciennete, setFAnciennete] = useState("Tous");
+  function passesFilters(conseillerCible){
+    if (!conseillerCible || conseillerCible === "Toute l'équipe") return true;
+    const entry = findRosterEntry(conseillerCible, roster);
+    if (fManager.length > 0 && (!entry || !fManager.includes(entry.manager))) return false;
+    if (fAnciennete !== "Tous" && (!entry || entry.statut !== fAnciennete)) return false;
+    return true;
+  }
 
   const isItemKpi = kpiFilter === "Hubicus Voix" || kpiFilter === "Hubicus Mail" || kpiFilter === "Conformité Process (Auchan)" || kpiFilter === "Conformité Process (Interne)" || kpiFilter === "Conformité Transfert" || kpiFilter.includes("NCC");
-  const ecartsForMonth = useMemo(() => moisKey ? ecarts.filter((e) => monthKeyFromDate(e.date) === moisKey) : ecarts, [ecarts, moisKey]);
-  const evalsForMonth = useMemo(() => (allEvaluations||[]).filter((ev) => !moisKey || monthKeyFromDate(ev.date) === moisKey), [allEvaluations, moisKey]);
+  const ecartsForMonth = useMemo(() => ecarts.filter((e) => inPeriodAn(e.date, e.semaine)), [ecarts, granPeriode, periodeValue, dateRangePeriode]);
+  const evalsForMonth = useMemo(() => (allEvaluations||[]).filter((ev) => inPeriodAn(ev.date, ev.semaine)), [allEvaluations, granPeriode, periodeValue, dateRangePeriode]);
+  const monthKeysInScope = useMemo(() => {
+    const set = new Set();
+    [ecartsForMonth, evalsForMonth].forEach((arr) => arr.forEach((e) => { const k = monthKeyFromDate(e.date); if (k) set.add(k); }));
+    return [...set];
+  }, [ecartsForMonth, evalsForMonth]);
 
   const realise = useMemo(() => computeGlobalKpiRealise(ecartsForMonth, evalsForMonth, kpiFilter), [ecartsForMonth, evalsForMonth, kpiFilter]);
   const objectif = OBJECTIFS[kpiFilter];
 
   const rosterNames = useMemo(() => [...new Set(roster.map((r) => displayConseillerName(r.conseiller)))].sort(), [roster]);
 
-  const filtered = useMemo(() => planActions.filter((p) => p.indicateur === kpiFilter)
-    .sort((a,b) => (a.echeance || "").localeCompare(b.echeance || "")), [planActions, kpiFilter]);
+  const filtered = useMemo(() => planActions.filter((p) => p.indicateur === kpiFilter && passesFilters(p.conseillerCible))
+    .sort((a,b) => (a.echeance || "").localeCompare(b.echeance || "")), [planActions, kpiFilter, fManager, fAnciennete, roster]);
+
+  const archiveForKpi = useMemo(
+    () => (planActionsArchive || []).filter((a) => a.indicateur === kpiFilter).sort((a,b) => (b.validatedAt||"").localeCompare(a.validatedAt||"")),
+    [planActionsArchive, kpiFilter]
+  );
 
   function openNewForm(){
     setForm(blankForm); setEditingId(null); setShowForm(true);
@@ -3021,7 +3417,43 @@ function PlanActionView({ ecarts, roster, allEvaluations, criteresEcarts, itemsS
     setPlanActions(planActions.map((p) => p.id === id ? { ...p, owner } : p));
   }
 
-  /* Génère automatiquement une action par item en écart (sur le mois sélectionné) qui n'a pas déjà
+  /* Archive un instantané (snapshot) du plan d'action actuellement affiché (indicateur + mois + filtres
+     en cours) — conservé indéfiniment dans le stockage partagé (Firestore), visible par tous les
+     utilisateurs, avec la date et l'auteur de la validation. N'efface ni ne verrouille le plan actif :
+     c'est un point de contrôle pour l'historique/traçabilité, pas une suppression. */
+  function validerPlan(){
+    if (filtered.length === 0) { alert("Aucune action à valider pour ces filtres."); return; }
+    const snapshot = {
+      id: uid(),
+      indicateur: kpiFilter,
+      periodeLabel: periodeLabel(),
+      validatedAt: new Date().toISOString(),
+      validatedBy: auth.label || auth.username || "Inconnu",
+      actions: filtered.map((p) => ({ ...p })),
+    };
+    setPlanActionsArchive([...(planActionsArchive||[]), snapshot]);
+    alert(`Plan d'action validé et archivé (${filtered.length} action(s)) — ${periodeLabel()}.`);
+  }
+
+  /* Réintègre les actions d'un plan archivé dans le plan actif, pour reprise/modification —
+     les actions dont l'id existe déjà sont mises à jour, les autres sont recréées. */
+  function reprendrePlan(snapshot){
+    if (!window.confirm(`Reprendre le plan validé le ${new Date(snapshot.validatedAt).toLocaleString("fr-FR")} par ${snapshot.validatedBy} ? Ses actions seront réintégrées dans le plan actif (modifiable).`)) return;
+    const byId = new Map(planActions.map((p) => [p.id, p]));
+    snapshot.actions.forEach((a) => byId.set(a.id, { ...a }));
+    setPlanActions([...byId.values()]);
+    setKpiFilter(snapshot.indicateur);
+    setShowArchive(false);
+  }
+
+  /* Supprime définitivement un plan validé de l'historique partagé — n'affecte pas le plan actif. */
+  function deleteArchive(id){
+    if (window.confirm("Supprimer définitivement ce plan validé de l'historique ? Cette action est irréversible et s'applique pour tous les utilisateurs.")) {
+      setPlanActionsArchive((planActionsArchive||[]).filter((a) => a.id !== id));
+    }
+  }
+
+  /* Génère automatiquement une action par item en écart (sur la période sélectionnée) qui n'a pas déjà
      une action active — reprend la synthèse des remarques les plus fréquentes comme constat, propose
      une action corrective, échéance J+15, statut initial "À lancer". */
   function actualiserPlan(){
@@ -3029,8 +3461,7 @@ function PlanActionView({ ecarts, roster, allEvaluations, criteresEcarts, itemsS
       alert("La génération automatique n'est pas disponible pour cet indicateur (pas de décomposition par item dans les fichiers source).");
       return;
     }
-    if (!moisKey) { alert("Aucun mois disponible dans les données actuelles."); return; }
-    const relevant = (criteresEcarts||[]).filter((c) => c.indicateur === kpiFilter && monthKeyFromDate(c.date) === moisKey);
+    const relevant = (criteresEcarts||[]).filter((c) => c.indicateur === kpiFilter && inPeriodAn(c.date, c.semaine));
     const byItem = {};
     relevant.forEach((c) => {
       if (!byItem[c.item]) byItem[c.item] = { item: c.item, remarques: {} };
@@ -3054,7 +3485,7 @@ function PlanActionView({ ecarts, roster, allEvaluations, criteresEcarts, itemsS
       return;
     }
     setPlanActions([...planActions, ...toAdd]);
-    alert(`${toAdd.length} action(s) créée(s) automatiquement pour ${monthLabelFromKey(moisKey)}.`);
+    alert(`${toAdd.length} action(s) créée(s) automatiquement pour ${periodeLabel()}.`);
   }
 
   return (
@@ -3066,13 +3497,67 @@ function PlanActionView({ ecarts, roster, allEvaluations, criteresEcarts, itemsS
         <select value={kpiFilter} onChange={(e) => setKpiFilter(e.target.value)}>
           {INDICATEURS.map((k) => <option key={k}>{k}</option>)}
         </select>
-        <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600, marginLeft:8}}>Mois de référence :</span>
-        <select value={moisKey} onChange={(e) => setMoisKey(e.target.value)}>
-          {availableMonths.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
+        <MultiSelectDropdown label="Manager :" options={managerOptions} selected={fManager} setSelected={setFManager} />
+        <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600, marginLeft:8}}>Ancienneté :</span>
+        <select value={fAnciennete} onChange={(e) => setFAnciennete(e.target.value)}>
+          {["Tous","Nouveau","Ancien"].map((s) => <option key={s}>{s}</option>)}
         </select>
-        {isAdmin && <button className="btn" style={{marginLeft:8}} onClick={actualiserPlan}>🔄 Actualiser le plan d'action</button>}
+      </div>
+
+      <PeriodFilter
+        granularity={granPeriode} setGranularity={setGranPeriode}
+        value={periodeValue} setValue={setPeriodeValue}
+        weekOptions={weekOptionsAn} monthOptions={monthOptionsAn} dayOptions={dayOptionsAn}
+        allowRange={true} dateRange={dateRangePeriode} setDateRange={setDateRangePeriode}
+      />
+
+      <div className="filters" style={{marginBottom:16}}>
+        {isAdmin && <button className="btn" onClick={actualiserPlan}>🔄 Actualiser le plan d'action</button>}
+        {isAdmin && <button className="btn" style={{color:"var(--purple)", borderColor:"var(--purple)"}} onClick={validerPlan}>🔒 Valider le plan d'action</button>}
+        <button className="btn" onClick={() => setShowArchive((s) => !s)}>🗂 Historique des plans validés ({archiveForKpi.length})</button>
         {isAdmin && <button className="btn primary" style={{marginLeft:"auto"}} onClick={openNewForm}>+ Ajouter une action</button>}
       </div>
+
+      {showArchive && (
+        <div className="card" style={{marginBottom:20}}>
+          <div style={{fontWeight:600, fontSize:14, marginBottom:10}}>Plans validés archivés — {kpiFilter} <span style={{fontSize:11, fontWeight:400, color:"var(--textMuted)"}}>(partagés entre tous les utilisateurs)</span></div>
+          {archiveForKpi.length === 0 ? <p style={{fontSize:13, color:"var(--textMuted)"}}>Aucun plan validé pour cet indicateur pour le moment.</p> : (
+            <div style={{display:"flex", flexDirection:"column", gap:10}}>
+              {archiveForKpi.map((snap) => (
+                <details key={snap.id} style={{borderLeft:"3px solid var(--purple)", paddingLeft:12}}>
+                  <summary style={{cursor:"pointer", fontSize:13}}>
+                    <strong>{snap.periodeLabel || "période non renseignée"}</strong> — validé le {new Date(snap.validatedAt).toLocaleString("fr-FR")} par {snap.validatedBy} — {snap.actions.length} action(s)
+                    {isAdmin && (
+                      <button className="btn" style={{marginLeft:12, padding:"2px 8px", fontSize:11}} onClick={(e) => { e.preventDefault(); reprendrePlan(snap); }}>↩ Reprendre / Modifier</button>
+                    )}
+                    {isAdmin && (
+                      <button className="btn" style={{marginLeft:6, padding:"2px 8px", fontSize:11, color:"var(--red)"}} onClick={(e) => { e.preventDefault(); deleteArchive(snap.id); }}>🗑 Supprimer</button>
+                    )}
+                  </summary>
+                  <div style={{overflowX:"auto", marginTop:8}}>
+                    <table>
+                      <thead><tr>{["Conseiller ciblé","Item impacté","Constat","Action corrective","Owner","Statut","Échéance"].map((h) => <th key={h}>{h}</th>)}</tr></thead>
+                      <tbody>
+                        {snap.actions.map((p) => (
+                          <tr key={p.id}>
+                            <td style={{fontSize:12}}>{p.conseillerCible}</td>
+                            <td style={{fontSize:12}}>{p.itemImpacte || "—"}</td>
+                            <td style={{fontSize:12, maxWidth:200}}>{p.constat || "—"}</td>
+                            <td style={{fontSize:12, maxWidth:200}}>{p.actionCorrective || "—"}</td>
+                            <td style={{fontSize:12}}>{p.owner || "—"}</td>
+                            <td style={{fontSize:12}}>{p.statut}</td>
+                            <td style={{fontSize:12}}>{p.echeance || "—"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </details>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="stat-row" style={{display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:16, marginBottom:20}}>
         <StatCard label="Réalisé" value={formatKpiValue(kpiFilter, realise)} tone={(realise !== null && realise < objectif) ? "bad" : "good"} />
@@ -3137,7 +3622,7 @@ function PlanActionView({ ecarts, roster, allEvaluations, criteresEcarts, itemsS
             <tbody>
               {filtered.map((p) => {
                 const post = computeResultatPostCoaching(p, allEvaluations);
-                const itemResult = getItemResult(itemsStats, p.indicateur, p.itemImpacte, moisKey);
+                const itemResult = getItemResultForPeriod(itemsStats, p.indicateur, p.itemImpacte, monthKeysInScope);
                 const enRetard = p.statut !== "Terminée" && p.echeance && p.echeance < new Date().toISOString().slice(0,10);
                 const editable = canEdit(p);
                 return (
@@ -3303,6 +3788,7 @@ function App(){
   const [nccResponses, setNccResponses] = useState([]);
   const [allEvaluations, setAllEvaluations] = useState([]);
   const [planActions, setPlanActions] = useState([]);
+  const [planActionsArchive, setPlanActionsArchive] = useState([]);
   const [criteresEcarts, setCriteresEcarts] = useState([]);
   const [itemsStats, setItemsStats] = useState([]);
   const [users, setUsers] = useState(SEED_USERS);
@@ -3311,7 +3797,7 @@ function App(){
   const [connStatus, setConnStatus] = useState("connecting"); // connecting | ok | unconfigured | error
   const [connError, setConnError] = useState("");
   const firstLoad = React.useRef(true);
-  const remoteUpdateRef = React.useRef({ ecarts: null, weekly: null, roster: null, nccResponses: null, allEvaluations: null, planActions: null, criteresEcarts: null, itemsStats: null, users: null });
+  const remoteUpdateRef = React.useRef({ ecarts: null, weekly: null, roster: null, nccResponses: null, allEvaluations: null, planActions: null, planActionsArchive: null, criteresEcarts: null, itemsStats: null, users: null });
 
   // Chargement initial + abonnement temps réel
   useEffect(() => {
@@ -3321,6 +3807,7 @@ function App(){
     let unsubNcc = () => {};
     let unsubEval = () => {};
     let unsubPlanActions = () => {};
+    let unsubPlanActionsArchive = () => {};
     let unsubCriteres = () => {};
     let unsubItemsStats = () => {};
     let unsubUsers = () => {};
@@ -3332,6 +3819,7 @@ function App(){
       const resN = await fsLoadChunked(STORAGE_KEY_NCC_RESPONSES, []);
       const resAE = await fsLoadChunked(STORAGE_KEY_ALL_EVALUATIONS, []);
       const resPA = await fsLoad(STORAGE_KEY_PLAN_ACTIONS, []);
+      const resPAA = await fsLoad(STORAGE_KEY_PLAN_ACTIONS_ARCHIVE, []);
       const resCE = await fsLoadChunked(STORAGE_KEY_CRITERES_ECARTS, []);
       const resIS = await fsLoad(STORAGE_KEY_ITEMS_STATS, []);
       const resU = await fsLoad(STORAGE_KEY_USERS, SEED_USERS);
@@ -3340,15 +3828,17 @@ function App(){
       const initEcarts = resE.value, initWeekly = resW.value;
       const initRoster = resR.value && resR.value.length > 0 ? resR.value : SEED_ROSTER;
       const initNcc = resN.value || [], initAE = resAE.value || [], initPA = resPA.value || [];
+      const initPAA = resPAA.value || [];
       const initCE = resCE.value || [], initIS = resIS.value || [];
       const initUsers = resU.value && resU.value.length > 0 ? resU.value : SEED_USERS;
-      remoteUpdateRef.current = { ecarts: initEcarts, weekly: initWeekly, roster: initRoster, nccResponses: initNcc, allEvaluations: initAE, planActions: initPA, criteresEcarts: initCE, itemsStats: initIS, users: initUsers };
+      remoteUpdateRef.current = { ecarts: initEcarts, weekly: initWeekly, roster: initRoster, nccResponses: initNcc, allEvaluations: initAE, planActions: initPA, planActionsArchive: initPAA, criteresEcarts: initCE, itemsStats: initIS, users: initUsers };
       setEcarts(initEcarts);
       setWeekly(initWeekly);
       setRoster(initRoster);
       setNccResponses(initNcc);
       setAllEvaluations(initAE);
       setPlanActions(initPA);
+      setPlanActionsArchive(initPAA);
       setCriteresEcarts(initCE);
       setItemsStats(initIS);
       setUsers(initUsers);
@@ -3364,13 +3854,14 @@ function App(){
         unsubNcc = fsSubscribeChunked(STORAGE_KEY_NCC_RESPONSES, (val) => { const v = val || []; remoteUpdateRef.current.nccResponses = v; setNccResponses(v); });
         unsubEval = fsSubscribeChunked(STORAGE_KEY_ALL_EVALUATIONS, (val) => { const v = val || []; remoteUpdateRef.current.allEvaluations = v; setAllEvaluations(v); });
         unsubPlanActions = fsSubscribe(STORAGE_KEY_PLAN_ACTIONS, (val) => { const v = val || []; remoteUpdateRef.current.planActions = v; setPlanActions(v); });
+        unsubPlanActionsArchive = fsSubscribe(STORAGE_KEY_PLAN_ACTIONS_ARCHIVE, (val) => { const v = val || []; remoteUpdateRef.current.planActionsArchive = v; setPlanActionsArchive(v); });
         unsubCriteres = fsSubscribeChunked(STORAGE_KEY_CRITERES_ECARTS, (val) => { const v = val || []; remoteUpdateRef.current.criteresEcarts = v; setCriteresEcarts(v); });
         unsubItemsStats = fsSubscribe(STORAGE_KEY_ITEMS_STATS, (val) => { const v = val || []; remoteUpdateRef.current.itemsStats = v; setItemsStats(v); });
         unsubUsers = fsSubscribe(STORAGE_KEY_USERS, (val) => { const v = val && val.length > 0 ? val : SEED_USERS; remoteUpdateRef.current.users = v; setUsers(v); });
       }
     })();
 
-    return () => { unsubEcarts(); unsubWeekly(); unsubRoster(); unsubNcc(); unsubEval(); unsubPlanActions(); unsubCriteres(); unsubItemsStats(); unsubUsers(); };
+    return () => { unsubEcarts(); unsubWeekly(); unsubRoster(); unsubNcc(); unsubEval(); unsubPlanActions(); unsubPlanActionsArchive(); unsubCriteres(); unsubItemsStats(); unsubUsers(); };
   }, []);
 
   // Sauvegarde (debounce) à chaque changement, une fois le chargement initial fait —
@@ -3393,6 +3884,7 @@ function App(){
         if (nccResponses !== remoteUpdateRef.current.nccResponses) { await fsSaveChunked(STORAGE_KEY_NCC_RESPONSES, nccResponses); remoteUpdateRef.current.nccResponses = nccResponses; }
         if (allEvaluations !== remoteUpdateRef.current.allEvaluations) { await fsSaveChunked(STORAGE_KEY_ALL_EVALUATIONS, allEvaluations); remoteUpdateRef.current.allEvaluations = allEvaluations; }
         if (planActions !== remoteUpdateRef.current.planActions) { await fsSave(STORAGE_KEY_PLAN_ACTIONS, planActions); remoteUpdateRef.current.planActions = planActions; }
+        if (planActionsArchive !== remoteUpdateRef.current.planActionsArchive) { await fsSave(STORAGE_KEY_PLAN_ACTIONS_ARCHIVE, planActionsArchive); remoteUpdateRef.current.planActionsArchive = planActionsArchive; }
         if (criteresEcarts !== remoteUpdateRef.current.criteresEcarts) { await fsSaveChunked(STORAGE_KEY_CRITERES_ECARTS, criteresEcarts); remoteUpdateRef.current.criteresEcarts = criteresEcarts; }
         if (itemsStats !== remoteUpdateRef.current.itemsStats) { await fsSave(STORAGE_KEY_ITEMS_STATS, itemsStats); remoteUpdateRef.current.itemsStats = itemsStats; }
         if (users !== remoteUpdateRef.current.users) { await fsSave(STORAGE_KEY_USERS, users); remoteUpdateRef.current.users = users; }
@@ -3400,7 +3892,7 @@ function App(){
       setSaving(false);
     }, 500);
     return () => clearTimeout(t);
-  }, [ecarts, weekly, roster, nccResponses, allEvaluations, planActions, criteresEcarts, itemsStats, users, loaded, connStatus]);
+  }, [ecarts, weekly, roster, nccResponses, allEvaluations, planActions, planActionsArchive, criteresEcarts, itemsStats, users, loaded, connStatus]);
 
   async function saveNow(ecartsToSave, weeklyToSave){
     if (connStatus !== "ok") return { ok: false, reason: connStatus };
@@ -3535,7 +4027,7 @@ function App(){
         {tab === "performance" && <PerformanceView ecarts={ecarts} weekly={weekly} roster={roster} allEvaluations={allEvaluations} />}
         {tab === "debriefing" && <DebriefingView ecarts={ecarts} setEcarts={setEcarts} weekly={weekly} onSaveNow={saveNow} roster={roster} allEvaluations={allEvaluations} />}
         {tab === "analyse" && <AnalyseView ecarts={ecarts} roster={roster} allEvaluations={allEvaluations} nccResponses={nccResponses} criteresEcarts={criteresEcarts} itemsStats={itemsStats} />}
-        {tab === "plan_action" && <PlanActionView ecarts={ecarts} roster={roster} allEvaluations={allEvaluations} criteresEcarts={criteresEcarts} itemsStats={itemsStats} planActions={planActions} setPlanActions={setPlanActions} auth={auth} />}
+        {tab === "plan_action" && <PlanActionView ecarts={ecarts} roster={roster} allEvaluations={allEvaluations} criteresEcarts={criteresEcarts} itemsStats={itemsStats} planActions={planActions} setPlanActions={setPlanActions} planActionsArchive={planActionsArchive} setPlanActionsArchive={setPlanActionsArchive} auth={auth} />}
         {tab === "roster" && auth.role === "admin" && <RosterView roster={roster} setRoster={setRoster} />}
         {tab === "nps" && <NPSView nccResponses={nccResponses} roster={roster} />}
         {tab === "import" && auth.role === "admin" && <ImportView ecarts={ecarts} setEcarts={setEcarts} onImportJSON={importFromJSON} roster={roster} setRoster={setRoster} nccResponses={nccResponses} setNccResponses={setNccResponses} allEvaluations={allEvaluations} setAllEvaluations={setAllEvaluations} />}

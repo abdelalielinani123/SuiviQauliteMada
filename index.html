@@ -1332,7 +1332,7 @@ function fillContinuousBuckets(rows, effectiveBucket){
    La granularité de regroupement (jour vs semaine) s'adapte au filtre actif, pour que les périodes
    courtes (2-3 jours) affichent bien plusieurs points au lieu d'être noyées dans un seul point hebdomadaire. */
 function computeKpiTrend(ecarts, allEvaluations, kpi, managers, roster, periodCtx){
-  const { granBreakdown="tous", periodBreakdown=[], dateRange=null, bucketBy=null, conseiller="Tous" } = periodCtx || {};
+  const { granBreakdown="tous", periodBreakdown=[], dateRange=null, bucketBy=null, conseiller="Tous", ancienneteFilter="Tous" } = periodCtx || {};
   const evalsForKpi = (allEvaluations || []).filter((ev) => ev.indicateur === kpi);
   const hasRawData = evalsForKpi.length > 0;
   const isNumericKpi = kpi === "Hubicus Voix" || kpi === "Hubicus Mail" || kpi.includes("NCC");
@@ -1341,8 +1341,14 @@ function computeKpiTrend(ecarts, allEvaluations, kpi, managers, roster, periodCt
   const effectiveBucket = bucketBy || (granBreakdown === "jour" || granBreakdown === "plage" ? "jour" : "semaine");
   const bucket = {};
 
+  function passesAnciennete(conseillerFull){
+    if (ancienneteFilter === "Tous") return true;
+    const entry = findRosterEntry(conseillerFull, roster);
+    return !!entry && entry.statut === ancienneteFilter;
+  }
   function inScope(conseillerFull){
     if (conseiller !== "Tous" && normalizeName(conseillerFull) !== normalizeName(conseiller)) return false;
+    if (!passesAnciennete(conseillerFull)) return false;
     if (!managers || managers.length === 0) return true;
     return managers.includes(getConseillerManagerFromRoster(conseillerFull, roster));
   }
@@ -1380,6 +1386,7 @@ function computeKpiTrend(ecarts, allEvaluations, kpi, managers, roster, periodCt
   } else {
     ecarts.filter((e) => e.indicateur === kpi).forEach((e) => {
       if (conseiller !== "Tous" && normalizeName(e.conseiller) !== normalizeName(conseiller)) return;
+      if (!passesAnciennete(e.conseiller)) return;
       if (managers && managers.length > 0 && !managers.includes(getEffectiveManager(e, roster))) return;
       if (!inPeriod(e.date, e.semaine)) return;
       const key = bucketKey(e.date, e.semaine);
@@ -1450,6 +1457,7 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
   const [visibleIndicators, setVisibleIndicators] = useState(() => new Set(INDICATEURS));
   const [fManager, setFManager] = useState([]);
   const [fConseiller, setFConseiller] = useState([]);
+  const [fAnciennete, setFAnciennete] = useState("Tous");
   const [onlyEnEcart, setOnlyEnEcart] = useState(false);
   const [kpiFilter, setKpiFilter] = useState(INDICATEURS[0]);
   const [granBreakdown, setGranBreakdown] = useState("tous");
@@ -1462,9 +1470,15 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
   const monthly = useMemo(() => computeMonthly(weekly), [weekly]);
 
   const ecartsManagerFiltered = useMemo(() => {
-    if (fManager.length === 0) return ecarts;
-    return ecarts.filter((e) => fManager.includes(getConseillerManagerFromRoster(e.conseiller, roster)));
-  }, [ecarts, fManager, roster]);
+    return ecarts.filter((e) => {
+      if (fManager.length > 0 && !fManager.includes(getConseillerManagerFromRoster(e.conseiller, roster))) return false;
+      if (fAnciennete !== "Tous") {
+        const entry = findRosterEntry(e.conseiller, roster);
+        if (!entry || entry.statut !== fAnciennete) return false;
+      }
+      return true;
+    });
+  }, [ecarts, fManager, fAnciennete, roster]);
 
   const filteredEcartsForDaily = useMemo(
     () => ecartsManagerFiltered.filter((e) => visibleIndicators.has(e.indicateur)),
@@ -1526,15 +1540,15 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
   /* Tendance multi-indicateurs pour le graphique "Évolution des résultats" en haut de la vue —
      dynamique selon la granularité (jour/semaine/mois), la période choisie et le(s) manager(s). */
   const topTrend = useMemo(
-    () => computeMultiKpiTrend(ecarts, allEvaluations, [...visibleIndicators], fManager, roster, { granBreakdown: granularity, periodBreakdown: periodTop, dateRange: dateRangeTop, bucketBy: displayGranularity, conseiller: fConseillerTop }),
-    [ecarts, allEvaluations, visibleIndicators, fManager, roster, granularity, periodTop, dateRangeTop, displayGranularity, fConseillerTop]
+    () => computeMultiKpiTrend(ecarts, allEvaluations, [...visibleIndicators], fManager, roster, { granBreakdown: granularity, periodBreakdown: periodTop, dateRange: dateRangeTop, bucketBy: displayGranularity, conseiller: fConseillerTop, ancienneteFilter: fAnciennete }),
+    [ecarts, allEvaluations, visibleIndicators, fManager, roster, granularity, periodTop, dateRangeTop, displayGranularity, fConseillerTop, fAnciennete]
   );
 
   /* Tendance du KPI sélectionné, sur la période et le(s) manager(s) filtrés — alimente le graphique dynamique.
      La granularité (jour vs semaine) s'adapte au filtre actif (voir computeKpiTrend). */
   const kpiTrend = useMemo(
-    () => computeKpiTrend(ecarts, allEvaluations, kpiFilter, fManager, roster, { granBreakdown, periodBreakdown, dateRange: dateRangeBreakdown }),
-    [ecarts, allEvaluations, kpiFilter, fManager, roster, granBreakdown, periodBreakdown, dateRangeBreakdown]
+    () => computeKpiTrend(ecarts, allEvaluations, kpiFilter, fManager, roster, { granBreakdown, periodBreakdown, dateRange: dateRangeBreakdown, ancienneteFilter: fAnciennete }),
+    [ecarts, allEvaluations, kpiFilter, fManager, roster, granBreakdown, periodBreakdown, dateRangeBreakdown, fAnciennete]
   );
 
   const conseillerBreakdownAll = useMemo(
@@ -1545,9 +1559,9 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
   /* Une série par conseiller sélectionné, pour comparer leur évolution sur le KPI et la période choisis. */
   const conseillerTrend = useMemo(
     () => fConseiller.length > 0
-      ? computeConseillerTrend(ecarts, allEvaluations, kpiFilter, fConseiller, fManager, roster, { granBreakdown, periodBreakdown, dateRange: dateRangeBreakdown })
+      ? computeConseillerTrend(ecarts, allEvaluations, kpiFilter, fConseiller, fManager, roster, { granBreakdown, periodBreakdown, dateRange: dateRangeBreakdown, ancienneteFilter: fAnciennete })
       : [],
-    [ecarts, allEvaluations, kpiFilter, fConseiller, fManager, roster, granBreakdown, periodBreakdown, dateRangeBreakdown]
+    [ecarts, allEvaluations, kpiFilter, fConseiller, fManager, roster, granBreakdown, periodBreakdown, dateRangeBreakdown, fAnciennete]
   );
   const conseillerTrendSeries = fConseiller.map((c, i) => ({ key: c, color: SERIES_COLORS[i % SERIES_COLORS.length] }));
   const objectifKpi = `${OBJECTIFS[kpiFilter]}${kpiFilter.includes("NCC") ? "/10" : "%"}`;
@@ -1558,16 +1572,23 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
     return c.total > 0;
   }
 
+  function passesAncienneteRoster(conseillerDisplay){
+    if (fAnciennete === "Tous") return true;
+    const entry = findRosterEntry(conseillerDisplay, roster);
+    return !!entry && entry.statut === fAnciennete;
+  }
   const conseillerBreakdown = useMemo(() => conseillerBreakdownAll.filter((c) => {
     if (fManager.length > 0 && !fManager.includes(c.manager)) return false;
     if (fConseiller.length > 0 && !fConseiller.includes(c.conseiller)) return false;
+    if (!passesAncienneteRoster(c.conseiller)) return false;
     if (onlyEnEcart && !isEnEcart(c)) return false;
     return true;
-  }).sort((a, b) => (a.avgScore ?? 999) - (b.avgScore ?? 999)), [conseillerBreakdownAll, fManager, fConseiller, onlyEnEcart, kpiFilter]);
+  }).sort((a, b) => (a.avgScore ?? 999) - (b.avgScore ?? 999)), [conseillerBreakdownAll, fManager, fConseiller, fAnciennete, onlyEnEcart, kpiFilter, roster]);
   const teamBreakdown = useMemo(() => computeTeamScoreBreakdown(conseillerBreakdownAll.filter((c) => {
     if (fManager.length > 0 && !fManager.includes(c.manager)) return false;
+    if (!passesAncienneteRoster(c.conseiller)) return false;
     return true;
-  })), [conseillerBreakdownAll, fManager]);
+  })), [conseillerBreakdownAll, fManager, fAnciennete, roster]);
 
   const hasRawDataForKpi = conseillerBreakdownAll.some((c) => c.hasRawData);
 
@@ -1610,6 +1631,10 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
         <select value={fConseillerTop} onChange={(e) => setFConseillerTop(e.target.value)}>
           <option>Tous</option>
           {conseillerOptions.map((c) => <option key={c}>{c}</option>)}
+        </select>
+        <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600, marginLeft:8}}>Ancienneté :</span>
+        <select value={fAnciennete} onChange={(e) => setFAnciennete(e.target.value)}>
+          {["Tous","Nouveau","Ancien"].map((s) => <option key={s}>{s}</option>)}
         </select>
       </div>
 

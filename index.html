@@ -1796,7 +1796,7 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
 /* ============================================================
    VUE : SUIVI DÉBRIEFING
    ============================================================ */
-function EcartDetailPanel({ e, onSave, onDelete, roster }) {
+function EcartDetailPanel({ e, onSave, onDelete, roster, criteresEcarts }) {
   const effectiveMgr = getEffectiveManager(e, roster);
   const [draft, setDraft] = useState({ statut: e.statut, action: e.action, dateDebrief: e.dateDebrief, manager: effectiveMgr });
   const [saving, setSaving] = useState(false);
@@ -1808,6 +1808,19 @@ function EcartDetailPanel({ e, onSave, onDelete, roster }) {
   }, [e.id]);
 
   const dirty = draft.statut !== e.statut || draft.action !== e.action || draft.dateDebrief !== e.dateDebrief || draft.manager !== effectiveMgr;
+
+  // Grille détaillée item par item : les items en écart (Non acquis / KO) pour CETTE évaluation précise,
+  // retrouvés par indicateur + conseiller + date (mêmes clés que celles utilisées à la génération d'ecarts).
+  // Seuls les items en écart sont stockés dans criteres_ecarts (pas les items conformes) — c'est donc la
+  // grille des points à travailler, pas un rappel complet Acquis/Non acquis de tous les items.
+  const itemsEnEcart = useMemo(() => {
+    if (!criteresEcarts) return [];
+    return criteresEcarts.filter((c) =>
+      c.indicateur === e.indicateur &&
+      normalizeName(c.conseiller) === normalizeName(e.conseiller) &&
+      c.date === e.date
+    );
+  }, [criteresEcarts, e.indicateur, e.conseiller, e.date]);
 
   async function handleSave(){
     setSaving(true);
@@ -1826,6 +1839,23 @@ function EcartDetailPanel({ e, onSave, onDelete, roster }) {
           <p className="field-label">Constat détaillé</p>
           <p className="field-value">{e.constat}</p>
           {e.alerte && <div className="status-msg err" style={{display:"inline-block"}}>⚠ {e.alerte}</div>}
+          <p className="field-label" style={{marginTop:14}}>Détail par item (grille) — {itemsEnEcart.length} écart(s) identifié(s)</p>
+          {itemsEnEcart.length === 0 ? (
+            <p style={{fontSize:12, color:"var(--textMuted)"}}>
+              Aucun détail par item disponible pour cet indicateur, ou la grille complète de cette évaluation
+              précise n'a pas été retrouvée (seuls les items en écart sont conservés, pas la liste complète
+              Acquis/Non acquis).
+            </p>
+          ) : (
+            <div style={{display:"flex", flexDirection:"column", gap:8, marginTop:6}}>
+              {itemsEnEcart.map((c, i) => (
+                <div key={i} style={{borderLeft:"3px solid var(--red)", paddingLeft:10}}>
+                  <div style={{fontWeight:600, fontSize:12.5}}>{c.item}</div>
+                  <div style={{fontSize:12, color:"var(--textMuted)"}}>{c.remarque}</div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
         <div>
           <p className="field-label">Statut du débriefing</p>
@@ -1859,7 +1889,7 @@ function EcartDetailPanel({ e, onSave, onDelete, roster }) {
   );
 }
 
-function DebriefingView({ ecarts, setEcarts, weekly, onSaveNow, roster, allEvaluations }) {
+function DebriefingView({ ecarts, setEcarts, weekly, onSaveNow, roster, allEvaluations, criteresEcarts }) {
   const [search, setSearch] = useState("");
   const [fInd, setFInd] = useState("Tous");
   const [fMgr, setFMgr] = useState([]);
@@ -1968,7 +1998,7 @@ function DebriefingView({ ecarts, setEcarts, weekly, onSaveNow, roster, allEvalu
                   {expanded === e.id && (
                     <tr>
                       <td colSpan="7" style={{padding:0}}>
-                        <EcartDetailPanel e={e} onSave={(patch) => saveRow(e.id, patch)} onDelete={() => deleteRow(e.id)} roster={roster} />
+                        <EcartDetailPanel e={e} onSave={(patch) => saveRow(e.id, patch)} onDelete={() => deleteRow(e.id)} roster={roster} criteresEcarts={criteresEcarts} />
                       </td>
                     </tr>
                   )}
@@ -4050,7 +4080,7 @@ function App(){
       <div className="wrap content">
         {tab === "reporting" && <ReportingView ecarts={ecarts} weekly={weekly} roster={roster} allEvaluations={allEvaluations} />}
         {tab === "performance" && <PerformanceView ecarts={ecarts} weekly={weekly} roster={roster} allEvaluations={allEvaluations} />}
-        {tab === "debriefing" && <DebriefingView ecarts={ecarts} setEcarts={setEcarts} weekly={weekly} onSaveNow={saveNow} roster={roster} allEvaluations={allEvaluations} />}
+        {tab === "debriefing" && <DebriefingView ecarts={ecarts} setEcarts={setEcarts} weekly={weekly} onSaveNow={saveNow} roster={roster} allEvaluations={allEvaluations} criteresEcarts={criteresEcarts} />}
         {tab === "analyse" && <AnalyseView ecarts={ecarts} roster={roster} allEvaluations={allEvaluations} nccResponses={nccResponses} criteresEcarts={criteresEcarts} itemsStats={itemsStats} />}
         {tab === "plan_action" && <PlanActionView ecarts={ecarts} roster={roster} allEvaluations={allEvaluations} criteresEcarts={criteresEcarts} itemsStats={itemsStats} planActions={planActions} setPlanActions={setPlanActions} planActionsArchive={planActionsArchive} setPlanActionsArchive={setPlanActionsArchive} auth={auth} />}
         {tab === "roster" && auth.role === "admin" && <RosterView roster={roster} setRoster={setRoster} />}

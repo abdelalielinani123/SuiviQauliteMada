@@ -159,8 +159,10 @@ const { useState, useEffect, useMemo, Fragment } = React;
 const INDICATEURS = [
   "Hubicus Voix", "Hubicus Mail", "Conformité Process (Auchan)",
   "Conformité Process (Interne)", "Conformité Transfert", "NCC / Satisfaction Client",
+  "Conformité Tickets Experts", "Conformité du Panier", "Conformité Appels Raccrochés",
+  "Conformité Transfert des Appels",
 ];
-const SERIES_COLORS = ["#96408F", "#B06BAA", "#C98A1E", "#7A8FBD", "#5FA8A0", "#3CA06E"];
+const SERIES_COLORS = ["#96408F", "#B06BAA", "#C98A1E", "#7A8FBD", "#5FA8A0", "#3CA06E", "#D4657A", "#8F6FCB", "#4FA6D6", "#C9A227"];
 const OBJECTIFS = {
   "Hubicus Voix": 85,
   "Hubicus Mail": 85,
@@ -168,6 +170,10 @@ const OBJECTIFS = {
   "Conformité Process (Interne)": 90,
   "Conformité Transfert": 90,
   "NCC / Satisfaction Client": 8.1,
+  "Conformité Tickets Experts": 90,
+  "Conformité du Panier": 90,
+  "Conformité Appels Raccrochés": 90,
+  "Conformité Transfert des Appels": 90,
 };
 
 // Managers réellement identifiés dans la répartition d'équipe (onglet "Lot unique") — les autres noms
@@ -2968,7 +2974,7 @@ function addDaysISO(dateStr, days){
 function AnalyseView({ ecarts, roster, allEvaluations, nccResponses, criteresEcarts, itemsStats }){
   // NCC a désormais son propre bloc d'analyse (causes déduites du verbatim) — il ne rejoint plus
   // le rendu générique "décomposition par item" des indicateurs de conformité/Hubicus.
-  const isItemKpi = (k) => k === "Hubicus Voix" || k === "Hubicus Mail" || k === "Conformité Process (Auchan)" || k === "Conformité Process (Interne)" || k === "Conformité Transfert";
+  const isItemKpi = (k) => k === "Hubicus Voix" || k === "Hubicus Mail" || k === "Conformité Process (Auchan)" || k === "Conformité Process (Interne)" || k === "Conformité Transfert" || k === "Conformité Tickets Experts" || k === "Conformité du Panier" || k === "Conformité Appels Raccrochés" || k === "Conformité Transfert des Appels";
 
   const [kpiFilter, setKpiFilter] = useState(INDICATEURS[0]);
   const isNcc = kpiFilter.includes("NCC");
@@ -3068,7 +3074,7 @@ function AnalyseView({ ecarts, roster, allEvaluations, nccResponses, criteresEca
   // Décomposition par item de grille qualité — pour Hubicus Voix/Mail et les trois indicateurs de
   // conformité (Transfert, Process Auchan, Process Interne) : résultat par item vs objectif, remarques
   // les plus fréquentes (texte réel de l'évaluateur, pas de reformulation) et liste des ccs concernés.
-  const isConformiteKpi = (k) => k === "Conformité Process (Auchan)" || k === "Conformité Process (Interne)" || k === "Conformité Transfert";
+  const isConformiteKpi = (k) => k === "Conformité Process (Auchan)" || k === "Conformité Process (Interne)" || k === "Conformité Transfert" || k === "Conformité Tickets Experts" || k === "Conformité du Panier" || k === "Conformité Appels Raccrochés" || k === "Conformité Transfert des Appels";
   const itemsBreakdown = useMemo(() => {
     if (!isItemKpi(kpiFilter)) return [];
     const byItem = {};
@@ -3425,7 +3431,7 @@ function PlanActionView({ ecarts, roster, allEvaluations, criteresEcarts, itemsS
     return true;
   }
 
-  const isItemKpi = kpiFilter === "Hubicus Voix" || kpiFilter === "Hubicus Mail" || kpiFilter === "Conformité Process (Auchan)" || kpiFilter === "Conformité Process (Interne)" || kpiFilter === "Conformité Transfert" || kpiFilter.includes("NCC");
+  const isItemKpi = kpiFilter === "Hubicus Voix" || kpiFilter === "Hubicus Mail" || kpiFilter === "Conformité Process (Auchan)" || kpiFilter === "Conformité Process (Interne)" || kpiFilter === "Conformité Transfert" || kpiFilter === "Conformité Tickets Experts" || kpiFilter === "Conformité du Panier" || kpiFilter === "Conformité Appels Raccrochés" || kpiFilter === "Conformité Transfert des Appels" || kpiFilter.includes("NCC");
   const ecartsForMonth = useMemo(() => ecarts.filter((e) => inPeriodAn(e.date, e.semaine)), [ecarts, granPeriode, periodeValue, dateRangePeriode]);
   const evalsForMonth = useMemo(() => (allEvaluations||[]).filter((ev) => inPeriodAn(ev.date, ev.semaine)), [allEvaluations, granPeriode, periodeValue, dateRangePeriode]);
   const monthKeysInScope = useMemo(() => {

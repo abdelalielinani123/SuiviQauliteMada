@@ -3987,7 +3987,7 @@ function App(){
     if (pending.length === 0) return;
     const startId = ecarts.reduce((max, e) => Math.max(max, Number(e.id) || 0), 0) + 1;
     const promoted = pending.map((item, i) => ({
-      id: startId + i, indicateur: item.indicateur, conseiller: item.conseiller, reference: "",
+      id: startId + i, indicateur: item.indicateur, conseiller: item.conseiller, reference: item.reference || "",
       semaine: item.semaine, date: item.date, ecart: item.ecart, statut: "À traiter", action: "",
       dateDebrief: "", constat: "Détecté automatiquement depuis les évaluations brutes.",
       managerDispatch: item.managerDispatch, manager: item.manager, alerte: "",

@@ -543,7 +543,7 @@ function computeAutoDetectedEcarts(allEvaluations, ecarts, roster, windowDays=14
       id: `auto-${autoId++}`,
       indicateur: ev.indicateur,
       conseiller: conseillerDisplay,
-      reference: "",
+      reference: ev.reference || "",
       semaine: ev.semaine,
       date: ev.date,
       ecart: ecartLabel,

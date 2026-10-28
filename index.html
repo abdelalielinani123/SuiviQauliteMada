@@ -207,6 +207,7 @@ const STORAGE_KEY_PLAN_ACTIONS = "tersea_dashboard_plan_actions";
 const STORAGE_KEY_PLAN_ACTIONS_ARCHIVE = "tersea_dashboard_plan_actions_archive";
 const STORAGE_KEY_CRITERES_ECARTS = "tersea_dashboard_criteres_ecarts";
 const STORAGE_KEY_ITEMS_STATS = "tersea_dashboard_items_stats";
+const STORAGE_KEY_SI_HUBICUS = "tersea_dashboard_si_hubicus";
 const STORAGE_KEY_USERS = "tersea_dashboard_users";
 const NOUVEAU_ANCIEN_SEUIL_JOURS = 90; // en dessous de ce seuil (date d'entrée en prod), un conseiller est considéré "Nouveau"
 
@@ -2504,7 +2505,7 @@ function ImportView({ ecarts, setEcarts, onImportJSON, roster, setRoster, nccRes
         const data = JSON.parse(evt.target.result);
         if (!Array.isArray(data.ecarts)) throw new Error("format invalide");
         onImportJSON(data);
-        setJsonStatus({ok:true, msg: "Chargé : "+data.ecarts.length+" écart(s)"+(data.historique_kpi ? " et "+data.historique_kpi.length+" semaine(s) d'historique" : "")+". Ce contenu remplace les données actuelles."});
+        setJsonStatus({ok:true, msg: "Chargé : "+data.ecarts.length+" écart(s)"+(data.historique_kpi ? " et "+data.historique_kpi.length+" semaine(s) d'historique" : "")+(data.si_hubicus ? ", "+data.si_hubicus.length+" SI Hubicus" : "")+". Ce contenu remplace les données actuelles."});
       } catch(err){
         setJsonStatus({ok:false, msg:"JSON illisible — vérifie qu'il s'agit bien d'un export généré par ce tableau de bord."});
       }
@@ -3837,6 +3838,339 @@ function UserManagementView({ users, setUsers, currentUserId }){
   );
 }
 
+/* ============================================================
+   VUE : SUIVI DES SI HUBICUS (situations inacceptables) — Voix et Mail séparément
+   ============================================================ */
+function SIBars({ data, color="#96408F", height }) {
+  const max = Math.max(1, ...data.map((d) => d.count));
+  return (
+    <div style={{display:"flex", flexDirection:"column", gap:6}}>
+      {data.map((d) => (
+        <div key={d.label} style={{display:"grid", gridTemplateColumns:"190px 1fr 56px", alignItems:"center", gap:8, fontSize:12}}>
+          <div style={{textAlign:"right", color:"#241C29"}} title={d.label}>{d.label}</div>
+          <div style={{background:"#F4F6F7", borderRadius:4, height:16}}>
+            <div style={{width:(d.count/max*100)+"%", background:color, height:16, borderRadius:4}} />
+          </div>
+          <div style={{fontWeight:700}}>{d.count}{d.pct !== undefined ? <span style={{fontWeight:400, color:"var(--textMuted)"}}> · {d.pct}%</span> : null}</div>
+        </div>
+      ))}
+      {data.length === 0 && <p style={{fontSize:13, color:"var(--textMuted)"}}>Aucun SI sur cette sélection.</p>}
+    </div>
+  );
+}
+
+function SIWeeklyChart({ rows, height=250 }) {
+  if (!rows.length) return <p style={{fontSize:13, color:"var(--textMuted)"}}>Aucune semaine à afficher.</p>;
+  const W = 700, H = height, padL = 34, padR = 10, padT = 28, padB = 46;
+  const innerW = W - padL - padR, innerH = H - padT - padB;
+  const maxRate = Math.max(10, Math.ceil(Math.max(...rows.map((r) => r.taux)) / 5) * 5);
+  const bw = innerW / rows.length;
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%", height}}>
+      {[0, 0.25, 0.5, 0.75, 1].map((g) => (
+        <g key={g}>
+          <line x1={padL} x2={W-padR} y1={padT + innerH - g*innerH} y2={padT + innerH - g*innerH} stroke="#EFEDEF" />
+          <text x={2} y={padT + innerH - g*innerH + 3} fontSize="9" fill="#6B6270">{Math.round(g*maxRate)}%</text>
+        </g>
+      ))}
+      {rows.map((r, i) => {
+        const h = (r.taux / maxRate) * innerH;
+        const x = padL + i*bw + bw*0.18, w = bw*0.64, y = padT + innerH - h;
+        const last = i === rows.length - 1;
+        return (
+          <g key={r.semaine}>
+            <rect x={x} y={y} width={w} height={h} rx="3" fill={last ? "#5E2159" : "#96408F"} />
+            <text x={x+w/2} y={y-14} fontSize="10" fontWeight="700" textAnchor="middle" fill="#241C29">{r.taux.toFixed(1)}%</text>
+            <text x={x+w/2} y={y-4} fontSize="9" textAnchor="middle" fill="#6B6270">{r.nbSI} SI / {r.nbEval}</text>
+            <text x={x+w/2} y={H-padB+16} fontSize="10" textAnchor="middle" fill="#6B6270">{r.semaine}</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function SuiviSIView({ siHubicus, allEvaluations, ecarts, roster }) {
+  const [ind, setInd] = useState("Hubicus Voix");
+  const [periode, setPeriode] = useState("4s");   // 4s | 8s | tout | AAAA-MM
+  const [fManager, setFManager] = useState("Tous");
+  const [fConseiller, setFConseiller] = useState("Tous");
+  const [fFamille, setFFamille] = useState("Toutes");
+  const [actifsSeulement, setActifsSeulement] = useState(true);
+
+  const weekNum = (s) => { const c = extractWeekCode(s); return c ? parseInt(c.slice(1), 10) : 0; };
+
+  const siInd = useMemo(() => (siHubicus || []).filter((r) => r.indicateur === ind), [siHubicus, ind]);
+  const evalInd = useMemo(() => (allEvaluations || []).filter((e) => e.indicateur === ind && e.date), [allEvaluations, ind]);
+
+  const allWeeks = useMemo(() => {
+    const set = new Set();
+    evalInd.forEach((e) => { const c = extractWeekCode(e.semaine); if (c) set.add(c); });
+    siInd.forEach((r) => { const c = extractWeekCode(r.semaine); if (c) set.add(c); });
+    return [...set].sort((a, b) => weekNum(a) - weekNum(b));
+  }, [evalInd, siInd]);
+
+  const monthOptions = useMemo(() => {
+    const set = new Set();
+    evalInd.forEach((e) => { const k = monthKeyFromDate(e.date); if (k) set.add(k); });
+    siInd.forEach((r) => { const k = monthKeyFromDate(r.date); if (k) set.add(k); });
+    return [...set].sort();
+  }, [evalInd, siInd]);
+
+  const lastWeeks = (n) => allWeeks.slice(-n);
+  const inPeriode = (date, semaine) => {
+    if (periode === "tout") return true;
+    if (periode === "4s") return lastWeeks(4).includes(extractWeekCode(semaine));
+    if (periode === "8s") return lastWeeks(8).includes(extractWeekCode(semaine));
+    return monthKeyFromDate(date) === periode;
+  };
+
+  const rosterInfo = (conseiller) => {
+    const entry = findRosterEntry(conseiller, roster);
+    return { manager: entry && entry.manager && entry.manager !== "RAS" ? entry.manager : (entry ? entry.manager : "Non renseigné"), statut: entry ? entry.statut : "Non renseigné" };
+  };
+  const keepConseiller = (c) => {
+    const info = rosterInfo(c);
+    if (actifsSeulement && info.statut === "Départ") return false;
+    if (fManager !== "Tous" && info.manager !== fManager) return false;
+    if (fConseiller !== "Tous" && normalizeName(c) !== fConseiller) return false;
+    return true;
+  };
+
+  const managerOptions = useMemo(() => {
+    const s = new Set();
+    siInd.forEach((r) => { const m = rosterInfo(r.conseiller).manager; if (m && m !== "RAS") s.add(m); });
+    return ["Tous", ...[...s].sort()];
+  }, [siInd, roster]);
+  const conseillerOptions = useMemo(() => {
+    const m = new Map();
+    siInd.forEach((r) => { m.set(normalizeName(r.conseiller), displayConseillerName(r.conseiller)); });
+    return [["Tous", "Tous"], ...[...m.entries()].sort((a, b) => a[1].localeCompare(b[1]))];
+  }, [siInd]);
+  const familleOptions = useMemo(() => {
+    const s = new Set(); siInd.forEach((r) => (r.familles || []).forEach((f) => s.add(f)));
+    return ["Toutes", ...[...s].sort()];
+  }, [siInd]);
+
+  // SI de la période + évaluations de la période (mêmes filtres) pour le taux
+  const siFiltered = useMemo(() => siInd.filter((r) =>
+    inPeriode(r.date, r.semaine) && keepConseiller(r.conseiller) && (fFamille === "Toutes" || (r.familles || []).includes(fFamille))
+  ), [siInd, periode, fManager, fConseiller, fFamille, actifsSeulement, allWeeks, roster]);
+  const evalFiltered = useMemo(() => evalInd.filter((e) => inPeriode(e.date, e.semaine) && keepConseiller(e.conseiller)),
+    [evalInd, periode, fManager, fConseiller, actifsSeulement, allWeeks, roster]);
+
+  const nbSI = siFiltered.length, nbEval = evalFiltered.length;
+  const taux = nbEval ? (nbSI / nbEval * 100) : 0;
+
+  // Suivi du débriefing : rapprochement SI ↔ écart (même référence, sinon même conseiller + même date + même indicateur)
+  const ecartFor = (r) => {
+    const list = (ecarts || []).filter((e) => e.indicateur === r.indicateur);
+    return list.find((e) => e.reference && r.reference && String(e.reference) === String(r.reference))
+      || list.find((e) => normalizeName(e.conseiller) === normalizeName(r.conseiller) && e.date === r.date) || null;
+  };
+  const siWithStatus = useMemo(() => siFiltered.map((r) => {
+    const e = ecartFor(r);
+    return { ...r, ecart: e, statutDeb: e ? (e.statut === "OK" || e.statut === "KO" ? e.statut : "À traiter") : null };
+  }), [siFiltered, ecarts]);
+  const nbDebriefes = siWithStatus.filter((r) => r.statutDeb === "OK" || r.statutDeb === "KO").length;
+  const nbSuivis = siWithStatus.filter((r) => r.ecart).length;
+
+  // Tendance hebdomadaire (mêmes filtres CC/manager, toutes semaines — 12 dernières)
+  const weeklyRows = useMemo(() => {
+    const rows = allWeeks.map((w) => {
+      const ev = evalInd.filter((e) => extractWeekCode(e.semaine) === w && keepConseiller(e.conseiller)).length;
+      const sn = siInd.filter((r) => extractWeekCode(r.semaine) === w && keepConseiller(r.conseiller) && (fFamille === "Toutes" || (r.familles || []).includes(fFamille))).length;
+      return { semaine: w, nbEval: ev, nbSI: sn, taux: ev ? sn / ev * 100 : 0 };
+    }).filter((r) => r.nbEval > 0);
+    return rows.slice(-12);
+  }, [allWeeks, evalInd, siInd, fManager, fConseiller, fFamille, actifsSeulement, roster]);
+
+  // Répartition par famille et par type
+  const familleData = useMemo(() => {
+    const c = {}; siFiltered.forEach((r) => (r.familles || []).forEach((f) => { c[f] = (c[f] || 0) + 1; }));
+    return Object.entries(c).sort((a, b) => b[1] - a[1]).map(([label, count]) => ({ label, count, pct: nbSI ? Math.round(count / nbSI * 100) : 0 }));
+  }, [siFiltered, nbSI]);
+  const typeData = useMemo(() => {
+    const c = {}; siFiltered.forEach((r) => (r.types || []).forEach((t) => { c[t] = (c[t] || 0) + 1; }));
+    return Object.entries(c).sort((a, b) => b[1] - a[1]).map(([label, count]) => ({ label, count }));
+  }, [siFiltered]);
+
+  // Par conseiller
+  const byConseiller = useMemo(() => {
+    const evCount = {}; evalFiltered.forEach((e) => { const k = normalizeName(e.conseiller); evCount[k] = (evCount[k] || 0) + 1; });
+    const m = {};
+    siWithStatus.forEach((r) => {
+      const k = normalizeName(r.conseiller);
+      if (!m[k]) m[k] = { key: k, conseiller: displayConseillerName(r.conseiller), manager: rosterInfo(r.conseiller).manager, items: [], types: {}, weeks: new Set(), deb: 0, suivis: 0 };
+      m[k].items.push(r); m[k].weeks.add(extractWeekCode(r.semaine));
+      (r.types || []).forEach((t) => { m[k].types[t] = (m[k].types[t] || 0) + 1; });
+      if (r.ecart) m[k].suivis += 1;
+      if (r.statutDeb === "OK" || r.statutDeb === "KO") m[k].deb += 1;
+    });
+    return Object.values(m).map((x) => ({ ...x, nbSI: x.items.length, nbEval: evCount[x.key] || 0,
+      taux: evCount[x.key] ? x.items.length / evCount[x.key] * 100 : 0,
+      lastDate: x.items.map((i) => i.date).sort().slice(-1)[0],
+      topTypes: Object.entries(x.types).sort((a, b) => b[1] - a[1]).slice(0, 2).map(([t, n]) => `${t} (${n})`).join(" · ") }))
+      .sort((a, b) => b.nbSI - a.nbSI || b.taux - a.taux);
+  }, [siWithStatus, evalFiltered, roster]);
+  const nbCC = byConseiller.length;
+  const recidive = byConseiller.filter((c) => c.nbSI >= 2 || c.weeks.size >= 2);
+
+  const detailRows = useMemo(() => [...siWithStatus].sort((a, b) => (b.date || "").localeCompare(a.date || "")), [siWithStatus]);
+  const familleTop = familleData[0];
+  const periodeLabel = periode === "4s" ? "les 4 dernières semaines" : periode === "8s" ? "les 8 dernières semaines" : periode === "tout" ? "toute la période" : monthLabelFromKey(periode);
+  const lastW = weeklyRows.length ? weeklyRows[weeklyRows.length - 1] : null;
+  const prevW = weeklyRows.length > 1 ? weeklyRows[weeklyRows.length - 2] : null;
+
+  function exportDetail(){
+    exportCSV(detailRows.map((r) => ({
+      Indicateur: r.indicateur, Date: r.date, Semaine: r.semaine, Conseiller: displayConseillerName(r.conseiller),
+      Manager: rosterInfo(r.conseiller).manager, "Type(s) de SI": (r.types || []).join(" | "), Famille: (r.familles || []).join(" | "),
+      Note: r.note, "Référence": r.reference, "Débriefing": r.statutDeb || "Non remonté", "Commentaire évaluateur": r.commentaire || "",
+    })), `suivi_SI_${ind.replace(/\s+/g, "_")}.csv`);
+  }
+
+  const noData = !siHubicus || siHubicus.length === 0;
+
+  return (
+    <div>
+      <SectionTitle icon="🚨">Suivi des SI Hubicus (situations inacceptables)</SectionTitle>
+
+      {noData && (
+        <div className="notice warn" style={{marginBottom:16}}>
+          <span className="ic">⚠</span>
+          <div>Aucune donnée SI chargée. Importez le dernier fichier JSON (clé <code>si_hubicus</code>) via l'onglet Importer.</div>
+        </div>
+      )}
+
+      <div className="filters" style={{marginBottom:12}}>
+        {["Hubicus Voix", "Hubicus Mail"].map((k) => (
+          <button key={k} className="btn" onClick={() => { setInd(k); setFConseiller("Tous"); setFFamille("Toutes"); }}
+            style={ind === k ? { background:"var(--purple)", color:"#fff", borderColor:"var(--purple)" } : {}}>
+            {k === "Hubicus Voix" ? "📞 Note Hubicus Voix" : "✉ Note Hubicus Mail"}
+          </button>
+        ))}
+        <span style={{fontSize:12, color:"var(--textMuted)"}}>Un SI = évaluation notée 0 (malus −100)</span>
+      </div>
+
+      <div className="filters" style={{marginBottom:16}}>
+        <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600}}>Période :</span>
+        <select value={periode} onChange={(e) => setPeriode(e.target.value)}>
+          <option value="4s">4 dernières semaines</option>
+          <option value="8s">8 dernières semaines</option>
+          <option value="tout">Toute la période</option>
+          {monthOptions.map((k) => <option key={k} value={k}>{monthLabelFromKey(k)}</option>)}
+        </select>
+        <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600}}>Manager :</span>
+        <select value={fManager} onChange={(e) => setFManager(e.target.value)}>
+          {managerOptions.map((m) => <option key={m} value={m}>{m}</option>)}
+        </select>
+        <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600}}>Conseiller :</span>
+        <select value={fConseiller} onChange={(e) => setFConseiller(e.target.value)}>
+          {conseillerOptions.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+        </select>
+        <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600}}>Famille de SI :</span>
+        <select value={fFamille} onChange={(e) => setFFamille(e.target.value)}>
+          {familleOptions.map((f) => <option key={f} value={f}>{f}</option>)}
+        </select>
+        <label style={{fontSize:12, display:"flex", alignItems:"center", gap:5}}>
+          <input type="checkbox" checked={actifsSeulement} onChange={(e) => setActifsSeulement(e.target.checked)} /> Conseillers actifs uniquement
+        </label>
+      </div>
+
+      <div className="stat-row" style={{marginBottom:16}}>
+        <StatCard label={`SI sur ${periodeLabel}`} value={nbSI} tone={nbSI > 0 ? "bad" : "good"} sub={`${nbEval} évaluation(s)`} />
+        <StatCard label="Taux de SI" value={nbEval ? taux.toFixed(1) + " %" : "—"} tone="accent" sub={lastW ? `${lastW.semaine} : ${lastW.taux.toFixed(1)} %${prevW ? ` (${prevW.semaine} : ${prevW.taux.toFixed(1)} %)` : ""}` : ""} />
+        <StatCard label="Conseillers concernés" value={nbCC} tone="neutral" sub={`${recidive.length} en récidive (2 SI ou plus)`} />
+        <StatCard label="SI débriefés" value={nbSuivis ? `${nbDebriefes}/${nbSuivis}` : "—"} tone={nbSuivis && nbDebriefes < nbSuivis ? "bad" : "good"} sub={nbSuivis < nbSI ? `${nbSI - nbSuivis} SI sans écart remonté` : "suivi complet"} />
+      </div>
+
+      {nbSI > 0 && familleTop && (
+        <div className="notice info" style={{marginBottom:16}}>
+          <span className="ic">💡</span>
+          <div>
+            Sur {periodeLabel}, <b>{nbSI} SI</b> ({taux.toFixed(1)} % des évaluations), dont <b>{familleTop.count}</b> relevant de la famille « {familleTop.label} ».
+            {recidive.length > 0 && <> {recidive.length} conseiller(s) en récidive, le plus touché : <b>{recidive[0].conseiller}</b> ({recidive[0].nbSI} SI).</>}
+          </div>
+        </div>
+      )}
+
+      <div className="card" style={{marginBottom:16}}>
+        <div style={{fontSize:13, fontWeight:600, color:"var(--purpleDark)", marginBottom:10}}>Évolution du taux de SI par semaine — {ind}</div>
+        <SIWeeklyChart rows={weeklyRows} />
+      </div>
+
+      <div className="grid-2col" style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, marginBottom:16}}>
+        <div className="card">
+          <div style={{fontSize:13, fontWeight:600, color:"var(--purpleDark)", marginBottom:10}}>Causes : familles de SI</div>
+          <SIBars data={familleData} />
+        </div>
+        <div className="card">
+          <div style={{fontSize:13, fontWeight:600, color:"var(--purpleDark)", marginBottom:10}}>Causes : types de SI</div>
+          <SIBars data={typeData} color="#B06BAA" />
+        </div>
+      </div>
+
+      <div className="card" style={{padding:0, overflow:"hidden", marginBottom:16}}>
+        <div style={{padding:"12px 14px", fontSize:13, fontWeight:600, color:"var(--purpleDark)", borderBottom:"1px solid var(--greyLine)"}}>
+          Conseillers concernés ({byConseiller.length}) — {ind}
+        </div>
+        <div style={{overflowX:"auto", maxHeight:380, overflowY:"auto"}}>
+          <table>
+            <thead><tr>{["Conseiller","Manager","SI","Éval.","Taux SI","Semaines","Dernier SI","Principaux types","Débriefés","Alerte"].map((h) => <th key={h}>{h}</th>)}</tr></thead>
+            <tbody>
+              {byConseiller.map((c, i) => (
+                <tr key={c.key} style={{backgroundColor: c.nbSI >= 3 ? "var(--redSoft)" : (i%2 ? "var(--grey)" : "#fff")}}>
+                  <td style={{fontWeight:600}}>{c.conseiller}</td>
+                  <td>{c.manager}</td>
+                  <td style={{fontWeight:700, color:"var(--red)"}}>{c.nbSI}</td>
+                  <td style={{color:"var(--textMuted)"}}>{c.nbEval || "—"}</td>
+                  <td>{c.nbEval ? c.taux.toFixed(1) + " %" : "—"}</td>
+                  <td style={{fontSize:12}}>{[...c.weeks].sort((a, b) => weekNum(a) - weekNum(b)).join(", ")}</td>
+                  <td style={{fontSize:12}}>{c.lastDate}</td>
+                  <td style={{fontSize:12}}>{c.topTypes}</td>
+                  <td>{c.suivis ? `${c.deb}/${c.suivis}` : "—"}</td>
+                  <td>{c.nbSI >= 3 ? <span className="badge KO">✕ Récidive forte</span> : c.nbSI >= 2 || c.weeks.size >= 2 ? <span className="badge atraiter">○ Récidive</span> : ""}</td>
+                </tr>
+              ))}
+              {byConseiller.length === 0 && <tr><td colSpan="10" style={{textAlign:"center", padding:20, color:"var(--textMuted)"}}>Aucun SI sur cette sélection.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="card" style={{padding:0, overflow:"hidden"}}>
+        <div style={{padding:"12px 14px", fontSize:13, fontWeight:600, color:"var(--purpleDark)", borderBottom:"1px solid var(--greyLine)", display:"flex", justifyContent:"space-between", alignItems:"center"}}>
+          <span>Détail des SI et suivi du débriefing ({detailRows.length})</span>
+          <button className="btn" style={{padding:"4px 10px", fontSize:12}} onClick={exportDetail}>⬇ Export CSV</button>
+        </div>
+        <div style={{overflowX:"auto", maxHeight:480, overflowY:"auto"}}>
+          <table>
+            <thead><tr>{["Date","Sem.","Conseiller","Manager","Type(s) de SI","Référence","Débriefing"].map((h) => <th key={h}>{h}</th>)}</tr></thead>
+            <tbody>
+              {detailRows.map((r, i) => (
+                <tr key={r.reference + i} style={{backgroundColor: i%2 ? "var(--grey)" : "#fff"}}>
+                  <td style={{whiteSpace:"nowrap"}}>{r.date}</td>
+                  <td>{extractWeekCode(r.semaine)}</td>
+                  <td style={{fontWeight:600}}>{displayConseillerName(r.conseiller)}</td>
+                  <td>{rosterInfo(r.conseiller).manager}</td>
+                  <td>
+                    <div style={{fontSize:13}}>{(r.types || []).join(" · ")}</div>
+                    {r.commentaire && <div style={{fontSize:11, color:"var(--textMuted)", marginTop:2, maxWidth:420}}>{r.commentaire}</div>}
+                  </td>
+                  <td style={{fontSize:11, color:"var(--textMuted)", fontFamily:"monospace"}}>{String(r.reference || "").slice(0, 13)}</td>
+                  <td>{r.statutDeb ? <Badge statut={r.statutDeb} /> : <span style={{fontSize:12, color:"var(--textMuted)"}}>Non remonté</span>}</td>
+                </tr>
+              ))}
+              {detailRows.length === 0 && <tr><td colSpan="7" style={{textAlign:"center", padding:20, color:"var(--textMuted)"}}>Aucun SI sur cette sélection.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App(){
   const [auth, setAuth] = useState(() => {
     try {
@@ -3854,13 +4188,14 @@ function App(){
   const [planActionsArchive, setPlanActionsArchive] = useState([]);
   const [criteresEcarts, setCriteresEcarts] = useState([]);
   const [itemsStats, setItemsStats] = useState([]);
+  const [siHubicus, setSiHubicus] = useState([]);
   const [users, setUsers] = useState(SEED_USERS);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [connStatus, setConnStatus] = useState("connecting"); // connecting | ok | unconfigured | error
   const [connError, setConnError] = useState("");
   const firstLoad = React.useRef(true);
-  const remoteUpdateRef = React.useRef({ ecarts: null, weekly: null, roster: null, nccResponses: null, allEvaluations: null, planActions: null, planActionsArchive: null, criteresEcarts: null, itemsStats: null, users: null });
+  const remoteUpdateRef = React.useRef({ ecarts: null, weekly: null, roster: null, nccResponses: null, allEvaluations: null, planActions: null, planActionsArchive: null, criteresEcarts: null, itemsStats: null, siHubicus: null, users: null });
 
   // Chargement initial + abonnement temps réel
   useEffect(() => {
@@ -3873,6 +4208,7 @@ function App(){
     let unsubPlanActionsArchive = () => {};
     let unsubCriteres = () => {};
     let unsubItemsStats = () => {};
+    let unsubSi = () => {};
     let unsubUsers = () => {};
 
     (async () => {
@@ -3885,6 +4221,7 @@ function App(){
       const resPAA = await fsLoad(STORAGE_KEY_PLAN_ACTIONS_ARCHIVE, []);
       const resCE = await fsLoadChunked(STORAGE_KEY_CRITERES_ECARTS, []);
       const resIS = await fsLoad(STORAGE_KEY_ITEMS_STATS, []);
+      const resSI = await fsLoad(STORAGE_KEY_SI_HUBICUS, []);
       const resU = await fsLoad(STORAGE_KEY_USERS, SEED_USERS);
       // Le chargement initial ne doit jamais déclencher une ré-écriture immédiate :
       // on vient de lire cette donnée, pas besoin de la réenregistrer telle quelle.
@@ -3892,9 +4229,9 @@ function App(){
       const initRoster = resR.value && resR.value.length > 0 ? resR.value : SEED_ROSTER;
       const initNcc = resN.value || [], initAE = resAE.value || [], initPA = resPA.value || [];
       const initPAA = resPAA.value || [];
-      const initCE = resCE.value || [], initIS = resIS.value || [];
+      const initCE = resCE.value || [], initIS = resIS.value || [], initSI = resSI.value || [];
       const initUsers = resU.value && resU.value.length > 0 ? resU.value : SEED_USERS;
-      remoteUpdateRef.current = { ecarts: initEcarts, weekly: initWeekly, roster: initRoster, nccResponses: initNcc, allEvaluations: initAE, planActions: initPA, planActionsArchive: initPAA, criteresEcarts: initCE, itemsStats: initIS, users: initUsers };
+      remoteUpdateRef.current = { ecarts: initEcarts, weekly: initWeekly, roster: initRoster, nccResponses: initNcc, allEvaluations: initAE, planActions: initPA, planActionsArchive: initPAA, criteresEcarts: initCE, itemsStats: initIS, siHubicus: initSI, users: initUsers };
       setEcarts(initEcarts);
       setWeekly(initWeekly);
       setRoster(initRoster);
@@ -3904,6 +4241,7 @@ function App(){
       setPlanActionsArchive(initPAA);
       setCriteresEcarts(initCE);
       setItemsStats(initIS);
+      setSiHubicus(initSI);
       setUsers(initUsers);
       setConnStatus(resE.status);
       setConnError(resE.error || "");
@@ -3920,11 +4258,12 @@ function App(){
         unsubPlanActionsArchive = fsSubscribe(STORAGE_KEY_PLAN_ACTIONS_ARCHIVE, (val) => { const v = val || []; remoteUpdateRef.current.planActionsArchive = v; setPlanActionsArchive(v); });
         unsubCriteres = fsSubscribeChunked(STORAGE_KEY_CRITERES_ECARTS, (val) => { const v = val || []; remoteUpdateRef.current.criteresEcarts = v; setCriteresEcarts(v); });
         unsubItemsStats = fsSubscribe(STORAGE_KEY_ITEMS_STATS, (val) => { const v = val || []; remoteUpdateRef.current.itemsStats = v; setItemsStats(v); });
+        unsubSi = fsSubscribe(STORAGE_KEY_SI_HUBICUS, (val) => { const v = val || []; remoteUpdateRef.current.siHubicus = v; setSiHubicus(v); });
         unsubUsers = fsSubscribe(STORAGE_KEY_USERS, (val) => { const v = val && val.length > 0 ? val : SEED_USERS; remoteUpdateRef.current.users = v; setUsers(v); });
       }
     })();
 
-    return () => { unsubEcarts(); unsubWeekly(); unsubRoster(); unsubNcc(); unsubEval(); unsubPlanActions(); unsubPlanActionsArchive(); unsubCriteres(); unsubItemsStats(); unsubUsers(); };
+    return () => { unsubEcarts(); unsubWeekly(); unsubRoster(); unsubNcc(); unsubEval(); unsubPlanActions(); unsubPlanActionsArchive(); unsubCriteres(); unsubItemsStats(); unsubSi(); unsubUsers(); };
   }, []);
 
   // Sauvegarde (debounce) à chaque changement, une fois le chargement initial fait —
@@ -3950,12 +4289,13 @@ function App(){
         if (planActionsArchive !== remoteUpdateRef.current.planActionsArchive) { await fsSave(STORAGE_KEY_PLAN_ACTIONS_ARCHIVE, planActionsArchive); remoteUpdateRef.current.planActionsArchive = planActionsArchive; }
         if (criteresEcarts !== remoteUpdateRef.current.criteresEcarts) { await fsSaveChunked(STORAGE_KEY_CRITERES_ECARTS, criteresEcarts); remoteUpdateRef.current.criteresEcarts = criteresEcarts; }
         if (itemsStats !== remoteUpdateRef.current.itemsStats) { await fsSave(STORAGE_KEY_ITEMS_STATS, itemsStats); remoteUpdateRef.current.itemsStats = itemsStats; }
+        if (siHubicus !== remoteUpdateRef.current.siHubicus) { await fsSave(STORAGE_KEY_SI_HUBICUS, siHubicus); remoteUpdateRef.current.siHubicus = siHubicus; }
         if (users !== remoteUpdateRef.current.users) { await fsSave(STORAGE_KEY_USERS, users); remoteUpdateRef.current.users = users; }
       }
       setSaving(false);
     }, 500);
     return () => clearTimeout(t);
-  }, [ecarts, weekly, roster, nccResponses, allEvaluations, planActions, planActionsArchive, criteresEcarts, itemsStats, users, loaded, connStatus]);
+  }, [ecarts, weekly, roster, nccResponses, allEvaluations, planActions, planActionsArchive, criteresEcarts, itemsStats, siHubicus, users, loaded, connStatus]);
 
   async function saveNow(ecartsToSave, weeklyToSave){
     if (connStatus !== "ok") return { ok: false, reason: connStatus };
@@ -3975,6 +4315,7 @@ function App(){
     if (Array.isArray(data.plan_actions)) setPlanActions(data.plan_actions.map((p) => ({...p, id: p.id ?? uid()})));
     if (Array.isArray(data.criteres_ecarts)) setCriteresEcarts(data.criteres_ecarts);
     if (Array.isArray(data.items_stats)) setItemsStats(data.items_stats);
+    if (Array.isArray(data.si_hubicus)) setSiHubicus(data.si_hubicus);
   }
 
   /* Intègre automatiquement les écarts détectés depuis les évaluations brutes (14 derniers jours, sous
@@ -4012,6 +4353,7 @@ function App(){
     { id:"performance", label:"Suivi performance", icon:"📈" },
     { id:"debriefing", label:"Suivi débriefing", icon:"📋" },
     { id:"analyse", label:"Analyse", icon:"🔍" },
+    { id:"si_hubicus", label:"Suivi SI Hubicus", icon:"🚨" },
     { id:"plan_action", label:"Plan d'action", icon:"🎯" },
     { id:"roster", label:"Répartition équipe", icon:"🧑‍🤝‍🧑" },
     { id:"nps", label:"Analyse NPS", icon:"⭐" },
@@ -4089,6 +4431,7 @@ function App(){
         {tab === "reporting" && <ReportingView ecarts={ecarts} weekly={weekly} roster={roster} allEvaluations={allEvaluations} />}
         {tab === "performance" && <PerformanceView ecarts={ecarts} weekly={weekly} roster={roster} allEvaluations={allEvaluations} />}
         {tab === "debriefing" && <DebriefingView ecarts={ecarts} setEcarts={setEcarts} weekly={weekly} onSaveNow={saveNow} roster={roster} allEvaluations={allEvaluations} criteresEcarts={criteresEcarts} />}
+        {tab === "si_hubicus" && <SuiviSIView siHubicus={siHubicus} allEvaluations={allEvaluations} ecarts={ecarts} roster={roster} />}
         {tab === "analyse" && <AnalyseView ecarts={ecarts} roster={roster} allEvaluations={allEvaluations} nccResponses={nccResponses} criteresEcarts={criteresEcarts} itemsStats={itemsStats} />}
         {tab === "plan_action" && <PlanActionView ecarts={ecarts} roster={roster} allEvaluations={allEvaluations} criteresEcarts={criteresEcarts} itemsStats={itemsStats} planActions={planActions} setPlanActions={setPlanActions} planActionsArchive={planActionsArchive} setPlanActionsArchive={setPlanActionsArchive} auth={auth} />}
         {tab === "roster" && auth.role === "admin" && <RosterView roster={roster} setRoster={setRoster} />}

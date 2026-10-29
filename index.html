@@ -177,7 +177,7 @@ const OBJECTIFS = {
 
 // Managers réellement identifiés dans la répartition d'équipe (onglet "Lot unique") — les autres noms
 // rencontrés dans d'anciens fichiers de dispatch (Haingo Fi, Hery, Fina) ont été retirés de partout.
-const MANAGERS = ["Christopha", "Ibra", "Rojo", "À confirmer", "Non trouvé"];
+const MANAGERS = ["Christopha", "Ibra", "Rojo", "Narindra", "Angèle", "Stéphanie", "À confirmer", "Non trouvé"];
 const STATUTS = ["À traiter", "OK", "KO"];
 
 /* ============================================================
@@ -431,6 +431,14 @@ function normalizeName(str){
 function findRosterEntry(conseiller, roster){
   const key = normalizeName(conseiller);
   if (!key || !roster || !roster.length) return null;
+  // Si le libellé contient l'identifiant TER_PST32_xxx, on rapproche d'abord sur ce code (évite les homonymes)
+  const cm = String(conseiller).match(/TER_PST32_(\d+)/);
+  if (cm) {
+    const tag = "TER_PST32_" + cm[1];
+    const byCode = roster.find((r) => String(r.conseiller).includes(tag) && normalizeName(r.conseiller) === key)
+      || roster.find((r) => String(r.conseiller).includes(tag));
+    if (byCode) return byCode;
+  }
   return roster.find((r) => normalizeName(r.conseiller) === key) || null;
 }
 
@@ -448,9 +456,45 @@ function getConseillerStatus(conseiller, roster){
   return "Non renseigné";
 }
 
-function getConseillerManagerFromRoster(conseiller, roster){
+/* ----- Répartition mensuelle (feuille "dispatch" par mois) -----
+   roster[i].dispatch = { "2026-07": { manager, shift }, "2026-08": {...}, ... }
+   Règle : manager du mois ; si le conseiller n'a pas de ligne ce mois-là, on retient le mois précédent
+   le plus proche, à défaut le premier mois disponible (mois antérieurs à la première feuille). */
+function monthKeyOf(dateOrMonth){
+  if (!dateOrMonth) return null;
+  const s = String(dateOrMonth);
+  if (/^\d{4}-\d{2}$/.test(s)) return s;
+  const m = s.match(/^(\d{4})-(\d{2})-\d{2}/);
+  return m ? m[1] + "-" + m[2] : null;
+}
+function getDispatchMonths(roster){
+  const set = new Set();
+  (roster || []).forEach((r) => Object.keys(r.dispatch || {}).forEach((k) => set.add(k)));
+  return [...set].sort();
+}
+function resolveDispatch(entry, mk){
+  const dp = entry && entry.dispatch;
+  if (!dp || !mk) return null;
+  const keys = Object.keys(dp).sort();
+  if (!keys.length) return null;
+  if (dp[mk]) return { manager: dp[mk].manager, shift: dp[mk].shift, exact: true, mois: mk };
+  const before = keys.filter((k) => k < mk);
+  const k = before.length ? before[before.length - 1] : keys[0];
+  return { manager: dp[k].manager, shift: dp[k].shift, exact: false, mois: k };
+}
+function getAllManagers(roster){
+  const set = new Set();
+  (roster || []).forEach((r) => {
+    if (r.manager && r.manager !== "RAS") set.add(r.manager);
+    Object.values(r.dispatch || {}).forEach((d) => { if (d && d.manager && d.manager !== "RAS") set.add(d.manager); });
+  });
+  return [...set].sort();
+}
+function getConseillerManagerFromRoster(conseiller, roster, dateOrMonth){
   const entry = findRosterEntry(conseiller, roster);
-  return entry ? entry.manager : null;
+  if (!entry) return null;
+  const res = dateOrMonth ? resolveDispatch(entry, monthKeyOf(dateOrMonth)) : null;
+  return res ? res.manager : entry.manager;
 }
 
 // Le manager "effectif" d'un écart : si le champ manager de l'écart est un vrai nom déjà résolu,
@@ -458,7 +502,7 @@ function getConseillerManagerFromRoster(conseiller, roster){
 // on retombe sur la répartition d'équipe si elle permet de trancher.
 function getEffectiveManager(e, roster){
   if (e.manager && e.manager !== "Non trouvé" && e.manager !== "À confirmer") return e.manager;
-  const rosterMgr = getConseillerManagerFromRoster(e.conseiller, roster);
+  const rosterMgr = getConseillerManagerFromRoster(e.conseiller, roster, e.date);
   if (rosterMgr && rosterMgr !== "RAS") return rosterMgr;
   return e.manager || "Non trouvé";
 }
@@ -539,7 +583,7 @@ function computeAutoDetectedEcarts(allEvaluations, ecarts, roster, windowDays=14
     const conseillerDisplay = displayConseillerName(ev.conseiller);
     const key = `${ev.indicateur}|${normalizeName(conseillerDisplay)}|${ev.date}`;
     if (knownKeys.has(key)) return;
-    const mgr = getConseillerManagerFromRoster(ev.conseiller, roster) || "Non trouvé";
+    const mgr = getConseillerManagerFromRoster(ev.conseiller, roster, ev.date) || "Non trouvé";
     out.push({
       id: `auto-${autoId++}`,
       indicateur: ev.indicateur,
@@ -1235,10 +1279,12 @@ function computeConseillerScoreBreakdown(ecarts, roster, kpi, allEvaluations, pe
     );
     const done = matchingEcarts.filter((e) => e.statut === "OK" || e.statut === "KO").length;
 
-    let avgScore = null, unit = kpi.includes("NCC") ? "/10" : "%", nbEval = 0;
+    let avgScore = null, unit = kpi.includes("NCC") ? "/10" : "%", nbEval = 0, mgrAt = r.manager;
     if (hasRawData) {
       const mine = evalsForKpi.filter((ev) => normalizeName(ev.conseiller) === normalizeName(r.conseiller));
       nbEval = mine.length;
+      const lastDate = mine.map((ev) => ev.date).filter(Boolean).sort().slice(-1)[0];
+      if (lastDate) mgrAt = getConseillerManagerFromRoster(r.conseiller, roster, lastDate) || r.manager;
       if (mine.length) {
         if (isNumericKpi) {
           const withScore = mine.filter((ev) => ev.score !== null && ev.score !== undefined && ev.score !== "");
@@ -1257,7 +1303,7 @@ function computeConseillerScoreBreakdown(ecarts, roster, kpi, allEvaluations, pe
 
     return {
       conseiller: displayConseillerName(r.conseiller),
-      manager: r.manager,
+      manager: mgrAt,
       statutEquipe: r.statut,
       total: matchingEcarts.length,
       done,
@@ -1355,11 +1401,11 @@ function computeKpiTrend(ecarts, allEvaluations, kpi, managers, roster, periodCt
     const entry = findRosterEntry(conseillerFull, roster);
     return !!entry && entry.statut === ancienneteFilter;
   }
-  function inScope(conseillerFull){
+  function inScope(conseillerFull, dateStr){
     if (conseiller !== "Tous" && normalizeName(conseillerFull) !== normalizeName(conseiller)) return false;
     if (!passesAnciennete(conseillerFull)) return false;
     if (!managers || managers.length === 0) return true;
-    return managers.includes(getConseillerManagerFromRoster(conseillerFull, roster));
+    return managers.includes(getConseillerManagerFromRoster(conseillerFull, roster, dateStr));
   }
   function inPeriod(dateStr, semaineStr){
     if (granBreakdown === "plage") return dateInRange(dateStr, dateRange);
@@ -1381,7 +1427,7 @@ function computeKpiTrend(ecarts, allEvaluations, kpi, managers, roster, periodCt
 
   if (hasRawData) {
     evalsForKpi.forEach((ev) => {
-      if (!inScope(ev.conseiller)) return;
+      if (!inScope(ev.conseiller, ev.date)) return;
       if (!inPeriod(ev.date, ev.semaine)) return;
       const key = bucketKey(ev.date, ev.semaine);
       if (!key) return;
@@ -1480,7 +1526,7 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
 
   const ecartsManagerFiltered = useMemo(() => {
     return ecarts.filter((e) => {
-      if (fManager.length > 0 && !fManager.includes(getConseillerManagerFromRoster(e.conseiller, roster))) return false;
+      if (fManager.length > 0 && !fManager.includes(getConseillerManagerFromRoster(e.conseiller, roster, e.date))) return false;
       if (fAnciennete !== "Tous") {
         const entry = findRosterEntry(e.conseiller, roster);
         if (!entry || entry.statut !== fAnciennete) return false;
@@ -1495,10 +1541,7 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
   );
   const daily = useMemo(() => computeDaily(filteredEcartsForDaily), [filteredEcartsForDaily]);
 
-  const managerOptions = useMemo(() => {
-    const set = new Set((roster || []).map((r) => r.manager).filter((m) => m && m !== "RAS"));
-    return [...set].sort();
-  }, [roster]);
+  const managerOptions = useMemo(() => getAllManagers(roster), [roster]);
   const conseillerOptions = useMemo(() => {
     return getRosterConseillerList(roster)
       .filter((r) => r.manager !== "RAS")
@@ -2068,14 +2111,17 @@ function AddEcartModal({ onClose, onAdd }) {
 /* ============================================================
    VUE : RÉPARTITION D'ÉQUIPE
    ============================================================ */
-function RosterAddEditModal({ initial, onClose, onSave }) {
-  const [form, setForm] = useState(initial || { conseiller: "", manager: MANAGERS.filter((m)=>m!=="À confirmer"&&m!=="Non trouvé")[0] || "Ibra", statut: "Ancien", dateEntreeProd: "" });
+function rosterCodeOf(s){ const m = String(s || "").match(/TER_PST32_(\d+)/); return m ? m[1] : null; }
+
+function RosterAddEditModal({ initial, onClose, onSave, managerOptions, monthLabel }) {
+  const mgrs = (managerOptions && managerOptions.length) ? managerOptions : MANAGERS.filter((m)=>m!=="À confirmer"&&m!=="Non trouvé");
+  const [form, setForm] = useState(initial || { conseiller: "", manager: mgrs[0] || "Ibra", statut: "Ancien", shift: "", dateEntreeProd: "" });
   const isEdit = !!initial;
   return (
     <div className="modal-overlay">
       <div className="modal">
         <div className="modal-close-row">
-          <h3>{isEdit ? "Modifier l'affectation" : "Ajouter un conseiller"}</h3>
+          <h3>{isEdit ? "Modifier l'affectation" : "Ajouter un conseiller"}{monthLabel ? " — " + monthLabel : ""}</h3>
           <button onClick={onClose} style={{border:"none", background:"none", cursor:"pointer", fontSize:18}}>×</button>
         </div>
         <div className="field-stack">
@@ -2083,7 +2129,11 @@ function RosterAddEditModal({ initial, onClose, onSave }) {
             disabled={isEdit} style={isEdit ? {opacity:0.6} : {}}
             onChange={(e) => setForm({...form, conseiller: e.target.value})} />
           <select value={form.manager} onChange={(e) => setForm({...form, manager: e.target.value})}>
-            {["Christopha","Ibra","Rojo"].map((m) => <option key={m}>{m}</option>)}
+            {[...new Set([...mgrs, form.manager].filter(Boolean))].map((m) => <option key={m}>{m}</option>)}
+          </select>
+          <select value={form.shift || ""} onChange={(e) => setForm({...form, shift: e.target.value})}>
+            <option value="">Shift : non renseigné</option>
+            {["int1","int2","ouv","fermeture"].map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
           <select value={form.statut} onChange={(e) => setForm({...form, statut: e.target.value})}>
             <option>Ancien</option><option>Nouveau</option><option>Départ</option>
@@ -2104,32 +2154,92 @@ function RosterView({ roster, setRoster }) {
   const [search, setSearch] = useState("");
   const [fManager, setFManager] = useState("Tous");
   const [fStatut, setFStatut] = useState("Tous");
-  const [modalMode, setModalMode] = useState(null); // null | "add" | conseiller-key of row being edited
+  const [month, setMonth] = useState(null);
+  const [modalMode, setModalMode] = useState(null); // null | "add" | conseiller of the row being edited
   const [confirmDelete, setConfirmDelete] = useState(null);
 
-  const filtered = useMemo(() => (roster || []).filter((r) => {
-    if (fManager !== "Tous" && r.manager !== fManager) return false;
+  const dispatchMonths = useMemo(() => getDispatchMonths(roster), [roster]);
+  const hasDispatch = dispatchMonths.length > 0;
+  const monthOptions = useMemo(() => {
+    if (!hasDispatch) return [];
+    const first = dispatchMonths[0];
+    return [...["2026-05", "2026-06"].filter((k) => k < first), ...dispatchMonths];
+  }, [dispatchMonths, hasDispatch]);
+  const mk = hasDispatch ? ((month && monthOptions.includes(month)) ? month : dispatchMonths[dispatchMonths.length - 1]) : null;
+  const monthHasSheet = hasDispatch && dispatchMonths.includes(mk);
+  const monthLabel = mk ? monthLabelFromKey(mk) : "";
+
+  // Lignes du mois affiché (une seule ligne par conseiller, même s'il existe plusieurs variantes de nom)
+  const monthRows = useMemo(() => {
+    const seen = new Set(), out = [];
+    (roster || []).forEach((r) => {
+      if (!hasDispatch) { out.push({ r, manager: r.manager, shift: "", exact: true, from: null }); return; }
+      const res = resolveDispatch(r, mk);
+      if (!res) return;
+      if (monthHasSheet && !res.exact) return;
+      const key = rosterCodeOf(r.conseiller) || r.conseiller;
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push({ r, manager: res.manager, shift: res.shift || "", exact: res.exact, from: res.exact ? null : res.mois });
+    });
+    return out;
+  }, [roster, mk, hasDispatch, monthHasSheet]);
+
+  const managersInMonth = useMemo(() => {
+    const c = {}; monthRows.forEach((x) => { if (x.manager && x.manager !== "RAS") c[x.manager] = (c[x.manager] || 0) + 1; });
+    return Object.entries(c).sort((a, b) => b[1] - a[1]);
+  }, [monthRows]);
+
+  const filtered = useMemo(() => monthRows.filter(({ r, manager }) => {
+    if (fManager !== "Tous" && manager !== fManager) return false;
     if (fStatut !== "Tous" && r.statut !== fStatut) return false;
     if (search && !r.conseiller.toLowerCase().includes(search.toLowerCase())) return false;
     return true;
-  }).sort((a,b) => displayConseillerName(a.conseiller).localeCompare(displayConseillerName(b.conseiller))), [roster, fManager, fStatut, search]);
+  }).sort((a, b) => displayConseillerName(a.r.conseiller).localeCompare(displayConseillerName(b.r.conseiller))),
+  [monthRows, fManager, fStatut, search]);
 
-  function addEntry(form){
-    setRoster([...(roster||[]), { conseiller: form.conseiller.trim(), manager: form.manager, site: "MADA", statut: form.statut, dateEntreeProd: "" }]);
+  const managerChoices = useMemo(() => {
+    const s = new Set(getAllManagers(roster)); managersInMonth.forEach(([m]) => s.add(m));
+    return [...s].sort();
+  }, [roster, managersInMonth]);
+
+  function sameEntry(r, conseiller){
+    const c1 = rosterCodeOf(r.conseiller), c2 = rosterCodeOf(conseiller);
+    return r.conseiller === conseiller || (c1 && c2 && c1 === c2);
+  }
+  function setMonthEntry(conseiller, form){
+    setRoster((roster || []).map((r) => {
+      if (!sameEntry(r, conseiller)) return r;
+      if (!hasDispatch) return { ...r, manager: form.manager, statut: form.statut };
+      const dp = { ...(r.dispatch || {}) };
+      dp[mk] = { manager: form.manager, shift: form.shift || (dp[mk] && dp[mk].shift) || "" };
+      const keys = Object.keys(dp).sort();
+      return { ...r, dispatch: dp, statut: form.statut, manager: (mk === keys[keys.length - 1]) ? form.manager : r.manager };
+    }));
     setModalMode(null);
   }
-  function updateEntry(originalConseiller, form){
-    setRoster((roster||[]).map((r) => r.conseiller === originalConseiller ? { ...r, manager: form.manager, statut: form.statut } : r));
+  function addEntry(form){
+    const existing = (roster || []).some((r) => sameEntry(r, form.conseiller.trim()));
+    if (existing) { setMonthEntry(form.conseiller.trim(), form); return; }
+    const entry = { conseiller: form.conseiller.trim(), manager: form.manager, site: "MADA", statut: form.statut, dateEntreeProd: "" };
+    if (hasDispatch) entry.dispatch = { [mk]: { manager: form.manager, shift: form.shift || "" } };
+    setRoster([...(roster || []), entry]);
     setModalMode(null);
   }
   function deleteEntry(conseiller){
-    setRoster((roster||[]).filter((r) => r.conseiller !== conseiller));
+    if (!hasDispatch) {
+      setRoster((roster || []).filter((r) => r.conseiller !== conseiller));
+    } else {
+      setRoster((roster || []).map((r) => {
+        if (!sameEntry(r, conseiller)) return r;
+        const dp = { ...(r.dispatch || {}) }; delete dp[mk];
+        return { ...r, dispatch: dp };
+      }));
+    }
     setConfirmDelete(null);
   }
 
-  const editingEntry = (typeof modalMode === "string" && modalMode !== "add")
-    ? (roster || []).find((r) => r.conseiller === modalMode)
-    : null;
+  const editingRow = (typeof modalMode === "string" && modalMode !== "add") ? monthRows.find((x) => x.r.conseiller === modalMode) : null;
 
   return (
     <div>
@@ -2137,17 +2247,35 @@ function RosterView({ roster, setRoster }) {
 
       <div className="notice info" style={{marginBottom:16}}>
         <span className="ic">ℹ</span>
-        <div>Cette répartition sert à retrouver automatiquement le manager d'un conseiller (Suivi débriefing, Reporting)
-        et à distinguer Nouveau/Ancien/Départ. Les modifications ici sont partagées en ligne comme le reste du tableau de bord.</div>
+        <div>
+          {hasDispatch
+            ? <>La répartition est suivie <b>mois par mois</b> : le manager d'un conseiller est celui du mois affiché, et les analyses rattachent chaque évaluation au manager du mois de l'évaluation.
+              Les modifications ici sont partagées en ligne comme le reste du tableau de bord.</>
+            : <>Cette répartition sert à retrouver automatiquement le manager d'un conseiller (Suivi débriefing, Reporting)
+              et à distinguer Nouveau/Ancien/Départ. Les modifications ici sont partagées en ligne comme le reste du tableau de bord.</>}
+        </div>
       </div>
 
+      {hasDispatch && !monthHasSheet && (
+        <div className="notice warn" style={{marginBottom:16}}>
+          <span className="ic">⚠</span>
+          <div>Aucune répartition enregistrée pour {monthLabel} : la répartition de {monthLabelFromKey(dispatchMonths[0])} est affichée par défaut.
+          Modifier une ligne enregistre la répartition de {monthLabel}.</div>
+        </div>
+      )}
+
       <div className="filters" style={{marginBottom:14}}>
+        {hasDispatch && (
+          <select value={mk} onChange={(e) => { setMonth(e.target.value); setFManager("Tous"); }}>
+            {monthOptions.map((k) => <option key={k} value={k}>{monthLabelFromKey(k)}{dispatchMonths.includes(k) ? "" : " (sans feuille)"}</option>)}
+          </select>
+        )}
         <div className="search-box">
           🔍
           <input placeholder="Rechercher un conseiller..." value={search} onChange={(e) => setSearch(e.target.value)} />
         </div>
         <select value={fManager} onChange={(e) => setFManager(e.target.value)}>
-          <option>Tous</option>{["Christopha","Ibra","Rojo"].map((m) => <option key={m}>{m}</option>)}
+          <option>Tous</option>{managersInMonth.map(([m]) => <option key={m}>{m}</option>)}
         </select>
         <select value={fStatut} onChange={(e) => setFStatut(e.target.value)}>
           <option>Tous</option><option>Ancien</option><option>Nouveau</option><option>Départ</option>
@@ -2155,51 +2283,57 @@ function RosterView({ roster, setRoster }) {
         <button className="btn primary" onClick={() => setModalMode("add")}>+ Ajouter un conseiller</button>
       </div>
 
-      <div style={{fontSize:12, color:"var(--textMuted)", marginBottom:8}}>{filtered.length} conseiller(s) affiché(s) sur {(roster||[]).length}</div>
+      <div style={{fontSize:12, color:"var(--textMuted)", marginBottom:8}}>
+        {filtered.length} conseiller(s) affiché(s) sur {monthRows.length}{hasDispatch ? " en " + monthLabel : ""}
+        {managersInMonth.length > 0 && <> · {managersInMonth.map(([m, n]) => m + " " + n).join(" · ")}</>}
+      </div>
 
       <div className="card" style={{padding:0, overflow:"hidden"}}>
         <table>
-          <thead><tr>{["Conseiller","Manager","Statut",""].map((h) => <th key={h}>{h}</th>)}</tr></thead>
+          <thead><tr>{["Conseiller","Manager", ...(hasDispatch ? ["Shift"] : []), "Statut",""].map((h, i) => <th key={h + i}>{h}</th>)}</tr></thead>
           <tbody>
-            {filtered.map((r, i) => (
+            {filtered.map(({ r, manager, shift, exact, from }, i) => (
               <tr key={r.conseiller+"-"+i} style={{backgroundColor: i%2 ? "var(--grey)" : "#fff"}}>
                 <td>{displayConseillerName(r.conseiller)}</td>
-                <td>{r.manager}</td>
+                <td>{manager}{from ? <span style={{fontSize:11, color:"var(--textMuted)"}}> (repris de {monthLabelFromKey(from)})</span> : null}</td>
+                {hasDispatch && <td style={{fontSize:12}}>{shift || "—"}</td>}
                 <td>
                   <span className={"badge " + (r.statut==="Départ" ? "KO" : r.statut==="Nouveau" ? "atraiter" : "OK")}>{r.statut || "—"}</span>
                 </td>
                 <td style={{whiteSpace:"nowrap"}}>
                   <button className="btn" style={{padding:"4px 10px", fontSize:12, marginRight:6}} onClick={() => setModalMode(r.conseiller)}>Modifier</button>
-                  <button className="btn" style={{padding:"4px 10px", fontSize:12, color:"var(--red)", background:"var(--redSoft)"}} onClick={() => setConfirmDelete(r.conseiller)}>Supprimer</button>
+                  {(exact || !hasDispatch) && <button className="btn" style={{padding:"4px 10px", fontSize:12, color:"var(--red)", background:"var(--redSoft)"}} onClick={() => setConfirmDelete(r.conseiller)}>{hasDispatch ? "Retirer du mois" : "Supprimer"}</button>}
                 </td>
               </tr>
             ))}
-            {filtered.length === 0 && <tr><td colSpan="4" style={{textAlign:"center", padding:20, color:"var(--textMuted)"}}>Aucun conseiller ne correspond à ces filtres.</td></tr>}
+            {filtered.length === 0 && <tr><td colSpan={hasDispatch ? 5 : 4} style={{textAlign:"center", padding:20, color:"var(--textMuted)"}}>Aucun conseiller ne correspond à ces filtres.</td></tr>}
           </tbody>
         </table>
       </div>
 
       {modalMode === "add" && (
-        <RosterAddEditModal onClose={() => setModalMode(null)} onSave={addEntry} />
+        <RosterAddEditModal onClose={() => setModalMode(null)} onSave={addEntry} managerOptions={managerChoices} monthLabel={hasDispatch ? monthLabel : ""} />
       )}
-      {editingEntry && (
+      {editingRow && (
         <RosterAddEditModal
-          initial={{ conseiller: editingEntry.conseiller, manager: editingEntry.manager === "RAS" ? "Ibra" : editingEntry.manager, statut: editingEntry.statut }}
+          initial={{ conseiller: editingRow.r.conseiller, manager: editingRow.manager === "RAS" ? (managerChoices[0] || "Ibra") : editingRow.manager, shift: editingRow.shift, statut: editingRow.r.statut }}
+          managerOptions={managerChoices} monthLabel={hasDispatch ? monthLabel : ""}
           onClose={() => setModalMode(null)}
-          onSave={(form) => updateEntry(editingEntry.conseiller, form)}
+          onSave={(form) => setMonthEntry(editingRow.r.conseiller, form)}
         />
       )}
       {confirmDelete && (
         <div className="modal-overlay">
           <div className="modal" style={{maxWidth:380}}>
-            <h3>Supprimer ce conseiller ?</h3>
+            <h3>{hasDispatch ? "Retirer ce conseiller du mois ?" : "Supprimer ce conseiller ?"}</h3>
             <p style={{fontSize:13, color:"var(--textMuted)"}}>
-              « {displayConseillerName(confirmDelete)} » sera retiré de la répartition d'équipe. Les écarts déjà
-              enregistrés pour ce conseiller resteront, mais son manager ne sera plus retrouvé automatiquement.
+              {hasDispatch
+                ? <>« {displayConseillerName(confirmDelete)} » ne figurera plus dans la répartition de {monthLabel}. Ses autres mois et ses écarts déjà enregistrés restent inchangés.</>
+                : <>« {displayConseillerName(confirmDelete)} » sera retiré de la répartition d'équipe. Les écarts déjà enregistrés pour ce conseiller resteront, mais son manager ne sera plus retrouvé automatiquement.</>}
             </p>
             <div style={{display:"flex", justifyContent:"flex-end", gap:8, marginTop:10}}>
               <button className="btn" onClick={() => setConfirmDelete(null)}>Annuler</button>
-              <button className="btn" style={{color:"var(--red)", background:"var(--redSoft)"}} onClick={() => deleteEntry(confirmDelete)}>Supprimer</button>
+              <button className="btn" style={{color:"var(--red)", background:"var(--redSoft)"}} onClick={() => deleteEntry(confirmDelete)}>{hasDispatch ? "Retirer" : "Supprimer"}</button>
             </div>
           </div>
         </div>
@@ -2225,7 +2359,7 @@ function NPSView({ nccResponses, roster }) {
 
   const withManager = useMemo(() => responses.map((r) => ({
     ...r,
-    manager: getConseillerManagerFromRoster(r.conseillerFull, roster) || "Non trouvé",
+    manager: getConseillerManagerFromRoster(r.conseillerFull, roster, r.date) || "Non trouvé",
     equipe: getConseillerStatus(r.conseillerFull, roster),
   })), [responses, roster]);
 
@@ -3024,33 +3158,31 @@ function AnalyseView({ ecarts, roster, allEvaluations, nccResponses, criteresEca
   }
 
   // Filtres Manager (multi) + Ancienneté (Nouveau/Ancien), appliqués à l'ensemble des blocs de cette vue.
-  const managerOptions = useMemo(() => {
-    const set = new Set((roster || []).map((r) => r.manager).filter((m) => m && m !== "RAS"));
-    return [...set].sort();
-  }, [roster]);
+  const managerOptions = useMemo(() => getAllManagers(roster), [roster]);
   const [fManager, setFManager] = useState([]);
   const [fAnciennete, setFAnciennete] = useState("Tous");
-  function passesFilters(rawOrDisplayConseiller){
+  function passesFilters(rawOrDisplayConseiller, dateStr){
     const entry = findRosterEntry(rawOrDisplayConseiller, roster);
-    if (fManager.length > 0 && (!entry || !fManager.includes(entry.manager))) return false;
+    const mgrAt = entry ? (dateStr ? getConseillerManagerFromRoster(rawOrDisplayConseiller, roster, dateStr) : entry.manager) : null;
+    if (fManager.length > 0 && (!entry || !fManager.includes(mgrAt))) return false;
     if (fAnciennete !== "Tous" && (!entry || entry.statut !== fAnciennete)) return false;
     return true;
   }
 
   const ecartsForMonth = useMemo(
-    () => ecarts.filter((e) => inPeriodAn(e.date, e.semaine) && passesFilters(e.conseiller)),
+    () => ecarts.filter((e) => inPeriodAn(e.date, e.semaine) && passesFilters(e.conseiller, e.date)),
     [ecarts, granPeriode, periodeValue, dateRangePeriode, fManager, fAnciennete, roster]
   );
   const evalsForMonth = useMemo(
-    () => (allEvaluations||[]).filter((ev) => inPeriodAn(ev.date, ev.semaine) && passesFilters(ev.conseiller)),
+    () => (allEvaluations||[]).filter((ev) => inPeriodAn(ev.date, ev.semaine) && passesFilters(ev.conseiller, ev.date)),
     [allEvaluations, granPeriode, periodeValue, dateRangePeriode, fManager, fAnciennete, roster]
   );
   const nccForMonth = useMemo(
-    () => (nccResponses||[]).filter((r) => inPeriodAn(r.date, r.semaine || null) && passesFilters(r.conseillerFull || r.conseiller)),
+    () => (nccResponses||[]).filter((r) => inPeriodAn(r.date, r.semaine || null) && passesFilters(r.conseillerFull || r.conseiller, r.date)),
     [nccResponses, granPeriode, periodeValue, dateRangePeriode, fManager, fAnciennete, roster]
   );
   const criteresForMonth = useMemo(
-    () => (criteresEcarts||[]).filter((c) => c.indicateur === kpiFilter && inPeriodAn(c.date, c.semaine) && passesFilters(c.conseiller)),
+    () => (criteresEcarts||[]).filter((c) => c.indicateur === kpiFilter && inPeriodAn(c.date, c.semaine) && passesFilters(c.conseiller, c.date)),
     [criteresEcarts, kpiFilter, granPeriode, periodeValue, dateRangePeriode, fManager, fAnciennete, roster]
   );
   // Mois calendaires (clé ISO "AAAA-MM") réellement couverts par la sélection en cours — sert à agréger
@@ -3087,7 +3219,7 @@ function AnalyseView({ ecarts, roster, allEvaluations, nccResponses, criteresEca
       b.count += 1;
       b.remarques[c.remarque] = (b.remarques[c.remarque] || 0) + 1;
       const cName = displayConseillerName(c.conseiller);
-      if (!b.ccs[cName]) b.ccs[cName] = { conseiller: cName, manager: getConseillerManagerFromRoster(c.conseiller, roster) || "Non trouvé", count: 0 };
+      if (!b.ccs[cName]) b.ccs[cName] = { conseiller: cName, manager: getConseillerManagerFromRoster(c.conseiller, roster, c.date) || "Non trouvé", count: 0 };
       b.ccs[cName].count += 1;
     });
     return Object.values(byItem).map((b) => ({
@@ -3110,7 +3242,7 @@ function AnalyseView({ ecarts, roster, allEvaluations, nccResponses, criteresEca
       b.count += 1;
       if (b.exemples.length < 3 && r.verbatim) b.exemples.push({ conseiller: r.conseiller, verbatim: r.verbatim, ndemande: r.ndemande || null });
       const cName = r.conseiller || displayConseillerName(r.conseillerFull || "");
-      if (!b.ccs[cName]) b.ccs[cName] = { conseiller: cName, manager: getConseillerManagerFromRoster(r.conseillerFull || cName, roster) || "Non trouvé", count: 0 };
+      if (!b.ccs[cName]) b.ccs[cName] = { conseiller: cName, manager: getConseillerManagerFromRoster(r.conseillerFull || cName, roster, r.date) || "Non trouvé", count: 0 };
       b.ccs[cName].count += 1;
     });
     return Object.values(byCause).map((b) => ({
@@ -3420,10 +3552,7 @@ function PlanActionView({ ecarts, roster, allEvaluations, criteresEcarts, itemsS
 
   // Filtres Manager (multi) + Ancienneté — mêmes filtres que la vue Analyse, appliqués aux conseillers ciblés
   // (les actions "Toute l'équipe" restent toujours visibles car elles ne ciblent personne en particulier).
-  const managerOptions = useMemo(() => {
-    const set = new Set((roster || []).map((r) => r.manager).filter((m) => m && m !== "RAS"));
-    return [...set].sort();
-  }, [roster]);
+  const managerOptions = useMemo(() => getAllManagers(roster), [roster]);
   const [fManager, setFManager] = useState([]);
   const [fAnciennete, setFAnciennete] = useState("Tous");
   function passesFilters(conseillerCible){
@@ -3925,12 +4054,13 @@ function SuiviSIView({ siHubicus, allEvaluations, ecarts, roster }) {
     return monthKeyFromDate(date) === periode;
   };
 
-  const rosterInfo = (conseiller) => {
+  const rosterInfo = (conseiller, date) => {
     const entry = findRosterEntry(conseiller, roster);
-    return { manager: entry && entry.manager && entry.manager !== "RAS" ? entry.manager : (entry ? entry.manager : "Non renseigné"), statut: entry ? entry.statut : "Non renseigné" };
+    const mgr = entry ? (getConseillerManagerFromRoster(conseiller, roster, date) || entry.manager) : "Non renseigné";
+    return { manager: mgr, statut: entry ? entry.statut : "Non renseigné" };
   };
-  const keepConseiller = (c) => {
-    const info = rosterInfo(c);
+  const keepConseiller = (c, date) => {
+    const info = rosterInfo(c, date);
     if (actifsSeulement && info.statut === "Départ") return false;
     if (fManager !== "Tous" && info.manager !== fManager) return false;
     if (fConseiller !== "Tous" && normalizeName(c) !== fConseiller) return false;
@@ -3939,7 +4069,7 @@ function SuiviSIView({ siHubicus, allEvaluations, ecarts, roster }) {
 
   const managerOptions = useMemo(() => {
     const s = new Set();
-    siInd.forEach((r) => { const m = rosterInfo(r.conseiller).manager; if (m && m !== "RAS") s.add(m); });
+    siInd.forEach((r) => { const m = rosterInfo(r.conseiller, r.date).manager; if (m && m !== "RAS") s.add(m); });
     return ["Tous", ...[...s].sort()];
   }, [siInd, roster]);
   const conseillerOptions = useMemo(() => {
@@ -3954,9 +4084,9 @@ function SuiviSIView({ siHubicus, allEvaluations, ecarts, roster }) {
 
   // SI de la période + évaluations de la période (mêmes filtres) pour le taux
   const siFiltered = useMemo(() => siInd.filter((r) =>
-    inPeriode(r.date, r.semaine) && keepConseiller(r.conseiller) && (fFamille === "Toutes" || (r.familles || []).includes(fFamille))
+    inPeriode(r.date, r.semaine) && keepConseiller(r.conseiller, r.date) && (fFamille === "Toutes" || (r.familles || []).includes(fFamille))
   ), [siInd, periode, fManager, fConseiller, fFamille, actifsSeulement, allWeeks, roster]);
-  const evalFiltered = useMemo(() => evalInd.filter((e) => inPeriode(e.date, e.semaine) && keepConseiller(e.conseiller)),
+  const evalFiltered = useMemo(() => evalInd.filter((e) => inPeriode(e.date, e.semaine) && keepConseiller(e.conseiller, e.date)),
     [evalInd, periode, fManager, fConseiller, actifsSeulement, allWeeks, roster]);
 
   const nbSI = siFiltered.length, nbEval = evalFiltered.length;
@@ -3978,8 +4108,8 @@ function SuiviSIView({ siHubicus, allEvaluations, ecarts, roster }) {
   // Tendance hebdomadaire (mêmes filtres CC/manager, toutes semaines — 12 dernières)
   const weeklyRows = useMemo(() => {
     const rows = allWeeks.map((w) => {
-      const ev = evalInd.filter((e) => extractWeekCode(e.semaine) === w && keepConseiller(e.conseiller)).length;
-      const sn = siInd.filter((r) => extractWeekCode(r.semaine) === w && keepConseiller(r.conseiller) && (fFamille === "Toutes" || (r.familles || []).includes(fFamille))).length;
+      const ev = evalInd.filter((e) => extractWeekCode(e.semaine) === w && keepConseiller(e.conseiller, e.date)).length;
+      const sn = siInd.filter((r) => extractWeekCode(r.semaine) === w && keepConseiller(r.conseiller, r.date) && (fFamille === "Toutes" || (r.familles || []).includes(fFamille))).length;
       return { semaine: w, nbEval: ev, nbSI: sn, taux: ev ? sn / ev * 100 : 0 };
     }).filter((r) => r.nbEval > 0);
     return rows.slice(-12);
@@ -4001,7 +4131,7 @@ function SuiviSIView({ siHubicus, allEvaluations, ecarts, roster }) {
     const m = {};
     siWithStatus.forEach((r) => {
       const k = normalizeName(r.conseiller);
-      if (!m[k]) m[k] = { key: k, conseiller: displayConseillerName(r.conseiller), manager: rosterInfo(r.conseiller).manager, items: [], types: {}, weeks: new Set(), deb: 0, suivis: 0 };
+      if (!m[k]) m[k] = { key: k, conseiller: displayConseillerName(r.conseiller), manager: rosterInfo(r.conseiller, r.date).manager, items: [], types: {}, weeks: new Set(), deb: 0, suivis: 0 };
       m[k].items.push(r); m[k].weeks.add(extractWeekCode(r.semaine));
       (r.types || []).forEach((t) => { m[k].types[t] = (m[k].types[t] || 0) + 1; });
       if (r.ecart) m[k].suivis += 1;
@@ -4025,7 +4155,7 @@ function SuiviSIView({ siHubicus, allEvaluations, ecarts, roster }) {
   function exportDetail(){
     exportCSV(detailRows.map((r) => ({
       Indicateur: r.indicateur, Date: r.date, Semaine: r.semaine, Conseiller: displayConseillerName(r.conseiller),
-      Manager: rosterInfo(r.conseiller).manager, "Type(s) de SI": (r.types || []).join(" | "), Famille: (r.familles || []).join(" | "),
+      Manager: rosterInfo(r.conseiller, r.date).manager, "Type(s) de SI": (r.types || []).join(" | "), Famille: (r.familles || []).join(" | "),
       Note: r.note, "Référence": r.reference, "Débriefing": r.statutDeb || "Non remonté", "Commentaire évaluateur": r.commentaire || "",
     })), `suivi_SI_${ind.replace(/\s+/g, "_")}.csv`);
   }
@@ -4153,7 +4283,7 @@ function SuiviSIView({ siHubicus, allEvaluations, ecarts, roster }) {
                   <td style={{whiteSpace:"nowrap"}}>{r.date}</td>
                   <td>{extractWeekCode(r.semaine)}</td>
                   <td style={{fontWeight:600}}>{displayConseillerName(r.conseiller)}</td>
-                  <td>{rosterInfo(r.conseiller).manager}</td>
+                  <td>{rosterInfo(r.conseiller, r.date).manager}</td>
                   <td>
                     <div style={{fontSize:13}}>{(r.types || []).join(" · ")}</div>
                     {r.commentaire && <div style={{fontSize:11, color:"var(--textMuted)", marginTop:2, maxWidth:420}}>{r.commentaire}</div>}

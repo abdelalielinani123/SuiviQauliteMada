@@ -22,7 +22,7 @@
   import { getFirestore, doc, getDoc, setDoc, deleteDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
   import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 
-const firebaseConfig = {
+  const firebaseConfig = {
 
   apiKey: "AIzaSyCwQkHcJLFn8z0cw1gBYUmZpW7VRs5dGAc",
 
@@ -37,8 +37,6 @@ const firebaseConfig = {
   appId: "1:51800223156:web:49a541a49bc7976d8e16e1"
 
 };
-
-
 
 
   const isConfigured = firebaseConfig.apiKey !== "COLLE_TA_CLE_API_ICI";
@@ -430,7 +428,7 @@ function normalizeName(str){
   return String(str).trim().split(/\s+/)[0].toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }
 
-function findRosterEntry(conseiller, roster){
+function findRosterEntry(conseiller, roster, dateOrMonth){
   const key = normalizeName(conseiller);
   if (!key || !roster || !roster.length) return null;
   // Si le libellé contient l'identifiant TER_PST32_xxx, on rapproche d'abord sur ce code (évite les homonymes)
@@ -441,7 +439,22 @@ function findRosterEntry(conseiller, roster){
       || roster.find((r) => String(r.conseiller).includes(tag));
     if (byCode) return byCode;
   }
-  return roster.find((r) => normalizeName(r.conseiller) === key) || null;
+  const cands = roster.filter((r) => normalizeName(r.conseiller) === key);
+  if (cands.length <= 1) return cands[0] || null;
+  // Plusieurs conseillers portent ce prénom : on retient celui présent dans la répartition du mois, sinon un conseiller actif
+  const mk = monthKeyOf(dateOrMonth);
+  if (mk) { const ex = cands.find((r) => r.dispatch && r.dispatch[mk]); if (ex) return ex; }
+  return cands.find((r) => r.manager && r.manager !== "RAS" && r.statut !== "Départ") || cands[0];
+}
+
+// Même personne ? (par code TER_PST32 quand il existe des deux côtés, sinon par prénom avec arbitrage des homonymes)
+function sameRosterPerson(label, entryLabel, roster, dateStr){
+  const cl = rosterCodeOf(label), ce = rosterCodeOf(entryLabel);
+  if (cl && ce) return cl === ce;
+  if (normalizeName(label) !== normalizeName(entryLabel)) return false;
+  const ent = findRosterEntry(label, roster, dateStr);
+  const ec = ent ? rosterCodeOf(ent.conseiller) : null;
+  return !ec || !ce || ec === ce;
 }
 
 function getConseillerStatus(conseiller, roster){
@@ -493,7 +506,7 @@ function getAllManagers(roster){
   return [...set].sort();
 }
 function getConseillerManagerFromRoster(conseiller, roster, dateOrMonth){
-  const entry = findRosterEntry(conseiller, roster);
+  const entry = findRosterEntry(conseiller, roster, dateOrMonth);
   if (!entry) return null;
   const res = dateOrMonth ? resolveDispatch(entry, monthKeyOf(dateOrMonth)) : null;
   return res ? res.manager : entry.manager;
@@ -510,12 +523,17 @@ function getEffectiveManager(e, roster){
 }
 
 function getRosterConseillerList(roster){
-  const seen = new Map();
+  // Un conseiller = un identifiant TER_PST32_xxx (à défaut, son prénom). Plusieurs variantes de nom
+  // pour un même code sont fusionnées ; deux conseillers homonymes (codes différents) restent distincts.
+  const best = new Map();
+  const score = (x) => (x.statut !== "Départ" ? 2 : 0) + (x.manager && x.manager !== "RAS" ? 1 : 0);
   (roster || []).forEach((r) => {
-    const key = normalizeName(r.conseiller);
-    if (key && !seen.has(key)) seen.set(key, r);
+    const key = rosterCodeOf(r.conseiller) || ("n:" + normalizeName(r.conseiller));
+    if (!key || key === "n:") return;
+    const cur = best.get(key);
+    if (!cur || score(r) >= score(cur)) best.set(key, r);
   });
-  return [...seen.values()];
+  return [...best.values()];
 }
 
 function displayConseillerName(rosterConseillerField){
@@ -652,7 +670,7 @@ function computeConseillerBreakdown(ecarts, roster, visibleIndicators){
     .filter((r) => r.manager !== "RAS") // on exclut les conseillers partis (pas de manager actif)
     .map((r) => {
       const matching = ecarts.filter((e) =>
-        normalizeName(e.conseiller) === normalizeName(r.conseiller) && visibleIndicators.has(e.indicateur)
+        sameRosterPerson(e.conseiller, r.conseiller, roster, e.date) && visibleIndicators.has(e.indicateur)
       );
       const done = matching.filter((e) => e.statut === "OK" || e.statut === "KO").length;
       const indicateursTouches = [...new Set(matching.map((e) => e.indicateur))];
@@ -1274,16 +1292,19 @@ function computeConseillerScoreBreakdown(ecarts, roster, kpi, allEvaluations, pe
   const evalsForKpi = (allEvaluations || []).filter((ev) => ev.indicateur === kpi && (!periodFilterFn || periodFilterFn(ev)));
   const hasRawData = evalsForKpi.length > 0;
   const isNumericKpi = kpi === "Hubicus Voix" || kpi === "Hubicus Mail" || kpi.includes("NCC");
+  // Dernier mois couvert par les évaluations de la période : un conseiller sans évaluation et dont la dernière
+  // affectation mensuelle est antérieure à ce mois a quitté l'équipe avant la période -> il n'est pas listé.
+  const maxMk = evalsForKpi.map((ev) => monthKeyOf(ev.date)).filter(Boolean).sort().slice(-1)[0] || null;
 
   return list.map((r) => {
     const matchingEcarts = ecarts.filter((e) =>
-      normalizeName(e.conseiller) === normalizeName(r.conseiller) && e.indicateur === kpi
+      e.indicateur === kpi && sameRosterPerson(e.conseiller, r.conseiller, roster, e.date)
     );
     const done = matchingEcarts.filter((e) => e.statut === "OK" || e.statut === "KO").length;
 
-    let avgScore = null, unit = kpi.includes("NCC") ? "/10" : "%", nbEval = 0, mgrAt = r.manager;
+    let avgScore = null, unit = kpi.includes("NCC") ? "/10" : "%", nbEval = 0, mgrAt = maxMk ? (getConseillerManagerFromRoster(r.conseiller, roster, maxMk) || r.manager) : r.manager;
     if (hasRawData) {
-      const mine = evalsForKpi.filter((ev) => normalizeName(ev.conseiller) === normalizeName(r.conseiller));
+      const mine = evalsForKpi.filter((ev) => sameRosterPerson(ev.conseiller, r.conseiller, roster, ev.date));
       nbEval = mine.length;
       const lastDate = mine.map((ev) => ev.date).filter(Boolean).sort().slice(-1)[0];
       if (lastDate) mgrAt = getConseillerManagerFromRoster(r.conseiller, roster, lastDate) || r.manager;
@@ -1303,6 +1324,10 @@ function computeConseillerScoreBreakdown(ecarts, roster, kpi, allEvaluations, pe
       if (scores.length) unit = scores[0].unit;
     }
 
+    if (hasRawData && nbEval === 0 && maxMk && r.dispatch) {
+      const ks = Object.keys(r.dispatch).sort();
+      if (ks.length && ks[ks.length - 1] < maxMk) return null;
+    }
     return {
       conseiller: displayConseillerName(r.conseiller),
       manager: mgrAt,
@@ -1312,14 +1337,14 @@ function computeConseillerScoreBreakdown(ecarts, roster, kpi, allEvaluations, pe
       avgScore, unit, nbEval,
       hasRawData,
     };
-  });
+  }).filter(Boolean);
 }
 
 function computeTeamScoreBreakdown(conseillerScoreBreakdown, isNumericKpi){
   const map = {};
   conseillerScoreBreakdown.forEach((c) => {
     const key = c.manager || "Non trouvé";
-    if (!map[key]) map[key] = { manager: key, total: 0, done: 0, nbConseillers: 0, nbEnEcart: 0, scores: [], nbEvalTotal: 0, okTotal: 0, unit: c.unit };
+    if (!map[key]) map[key] = { manager: key, total: 0, done: 0, nbConseillers: 0, nbEnEcart: 0, scores: [], nbEvalTotal: 0, okTotal: 0, wSum: 0, wN: 0, unit: c.unit };
     map[key].total += c.total;
     map[key].done += c.done;
     map[key].nbConseillers += 1;
@@ -1327,11 +1352,13 @@ function computeTeamScoreBreakdown(conseillerScoreBreakdown, isNumericKpi){
     if (c.avgScore !== null) {
       map[key].scores.push(c.avgScore);
       map[key].nbEvalTotal += c.nbEval || 1;
+      map[key].wSum += c.avgScore * (c.nbEval || 1);
+      map[key].wN += (c.nbEval || 1);
     }
   });
   return Object.values(map).map((t) => ({
     ...t,
-    avgScore: t.scores.length ? Math.round((t.scores.reduce((a,b) => a+b, 0)/t.scores.length)*10)/10 : null,
+    avgScore: t.wN ? Math.round((t.wSum/t.wN)*10)/10 : null,
   })).sort((a, b) => b.total - a.total);
 }
 
@@ -1530,7 +1557,7 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
     return ecarts.filter((e) => {
       if (fManager.length > 0 && !fManager.includes(getConseillerManagerFromRoster(e.conseiller, roster, e.date))) return false;
       if (fAnciennete !== "Tous") {
-        const entry = findRosterEntry(e.conseiller, roster);
+        const entry = findRosterEntry(e.conseiller, roster, e.date);
         if (!entry || entry.statut !== fAnciennete) return false;
       }
       return true;
@@ -4515,7 +4542,7 @@ function App(){
         <div className="wrap header-inner">
           <div>
             <h1>Suivi Qualité — TERSEA Madagascar</h1>
-            <p>Débriefings managers · Reporting · Compte Auchan · Site Mada</p>
+            <p>Débriefings managers · Reporting · Compte Auchan · Site Mada · <span title="Version du fichier déployé">Version 29/10/2026 (v4)</span></p>
           </div>
           <div className="status" style={{display:"flex", alignItems:"center", gap:10}}>
             <span>💾 {statusLabel}</span>

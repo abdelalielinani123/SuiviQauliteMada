@@ -3196,6 +3196,293 @@ function addDaysISO(dateStr, days){
 }
 
 /* ============================================================
+   VUE : SUIVI DES RÉSULTATS (agents / équipes)
+   Mêmes règles que le fichier Excel de suivi : Hubicus et NCC = moyenne des notes ; conformité = % d'évaluations OK
+   (KO et Situation inacceptable comptent 0). Manager = celui du dispatch du mois de l'évaluation.
+   ============================================================ */
+function SuiviResultatsView({ allEvaluations, roster }) {
+  const [mode, setMode] = useState("agent"); // "agent" | "equipe"
+  const [fMois, setFMois] = useState("Tous");
+  const [fSemaine, setFSemaine] = useState("Toutes");
+  const [fAgent, setFAgent] = useState("");
+  const [fManager, setFManager] = useState("Tous");
+  const [fEquipe, setFEquipe] = useState("Tous");
+
+  const unit = (k) => (k.includes("NCC") ? "/10" : "%");
+  const fmt = (v, k) => (v === null || v === undefined ? "—" : (k.includes("NCC") ? v.toFixed(2) : v.toFixed(1)));
+  const isoYear = (ds) => { const d = new Date(ds + "T00:00:00Z"); const t = new Date(d); t.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7)); return t.getUTCFullYear(); };
+  const SHORT = { "Hubicus Voix":"Hubicus Voix", "Hubicus Mail":"Hubicus Mail", "NCC / Satisfaction Client":"NCC (/10)", "Conformité Process (Auchan)":"Conf. Process", "Conformité Transfert des Appels":"Conf. Transfert", "Conformité Appels Raccrochés":"Conf. Raccrochés", "Conformité Tickets Experts":"Conf. Tickets", "Conformité du Panier":"Conf. Panier", "Taux de conformité des transferts en file d'attente":"Conf. File d'attente" };
+
+  // Un agent = un code TER_PST32_xxx. Nom affiché = nom le plus fréquent dans ses évaluations (le roster peut porter 2 noms pour un même poste).
+  const niceName = (s) => { const n = displayConseillerName(s); return n.charAt(0).toUpperCase() + n.slice(1).toLowerCase(); };
+  const nameByCode = useMemo(() => {
+    const cnt = {};
+    (allEvaluations || []).forEach((e) => { const c = rosterCodeOf(e && e.conseiller); if (!c) return; const n = niceName(e.conseiller); (cnt[c] = cnt[c] || {})[n] = (cnt[c][n] || 0) + 1; });
+    const out = {};
+    Object.keys(cnt).forEach((c) => { out[c] = Object.entries(cnt[c]).sort((a, b) => b[1] - a[1])[0][0]; });
+    return out;
+  }, [allEvaluations]);
+  const agentLabelOf = (rawName, entryName) => {
+    const code = rosterCodeOf(rawName) || rosterCodeOf(entryName);
+    const nm = (code && nameByCode[code]) || niceName(entryName || rawName);
+    return code ? `${nm} (${code})` : nm;
+  };
+
+  // Une ligne par évaluation, enrichie (agent, manager du mois, équipe, semaine, mois, score)
+  const rows = useMemo(() => {
+    const out = [];
+    (allEvaluations || []).forEach((e) => {
+      if (!e || !e.date || !OBJECTIFS[e.indicateur]) return;
+      const ind = e.indicateur;
+      let score;
+      if (ind.startsWith("Hubicus") || ind.startsWith("NCC")) { if (e.score === null || e.score === undefined || isNaN(Number(e.score))) return; score = Number(e.score); }
+      else score = String(e.statut || "").toUpperCase() === "OK" ? 100 : 0;
+      const entry = findRosterEntry(e.conseiller, roster, e.date);
+      const agentLabel = agentLabelOf(e.conseiller, entry && entry.conseiller);
+      let mgr = getConseillerManagerFromRoster(e.conseiller, roster, e.date);
+      if (!mgr || mgr === "RAS") mgr = "Départ / sans manager";
+      const wk = e.semaine ? String(e.semaine).toUpperCase() : "";
+      const sem = isoYear(e.date) === 2026 ? wk : `${wk}-${String(isoYear(e.date)).slice(2)}`;
+      out.push({ agent: agentLabel, mgr, eq: (entry && entry.statut) || "", ind, score, sem, mois: e.date.slice(0, 7) });
+    });
+    return out;
+  }, [allEvaluations, roster, nameByCode]);
+
+  const moisOptions = useMemo(() => [...new Set(rows.map((r) => r.mois))].sort(), [rows]);
+  const semOptions = useMemo(() => [...new Set(rows.map((r) => r.sem))].filter((s) => /^S\d+$/.test(s)).sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1))), [rows]);
+  const weeksGrid = semOptions.slice(-12);
+
+  // Agents connus : roster (hors départs sans évaluation) + agents ayant des évaluations
+  const agents = useMemo(() => {
+    const m = new Map();
+    rows.forEach((r) => { m.set(r.agent, { agent: r.agent, mgr: r.mgr, eq: r.eq }); });
+    getRosterConseillerList(roster).forEach((r) => {
+      const lab = agentLabelOf(r.conseiller, r.conseiller);
+      const mk = r.dispatch ? Object.keys(r.dispatch).sort().pop() : null;
+      const mgr = (mk && r.dispatch[mk] && r.dispatch[mk].manager) || r.manager;
+      if (m.has(lab)) { const a = m.get(lab); if (mgr && mgr !== "RAS") a.mgr = mgr; a.eq = r.statut || a.eq; }
+      else if (r.statut !== "Départ" && mgr && mgr !== "RAS") m.set(lab, { agent: lab, mgr, eq: r.statut || "" });
+    });
+    const dep = (x) => (x.mgr === "Départ / sans manager" ? 1 : 0);
+    return [...m.values()].sort((a, b) => dep(a) - dep(b) || a.mgr.localeCompare(b.mgr) || a.agent.localeCompare(b.agent));
+  }, [rows, roster, nameByCode]);
+  const managerOptions = useMemo(() => [...new Set(agents.map((a) => a.mgr))].sort(), [agents]);
+
+  useEffect(() => { if (!fAgent && agents.length) setFAgent(agents[0].agent); }, [agents]);
+
+  const inPeriod = (r) => (fMois === "Tous" || r.mois === fMois) && (fSemaine === "Toutes" || r.sem === fSemaine);
+  const avgOf = (list) => (list.length ? list.reduce((s, r) => s + r.score, 0) / list.length : null);
+  const colorOf = (v, k) => (v === null ? "var(--textMuted)" : (v < OBJECTIFS[k] ? "var(--red)" : "var(--green)"));
+  const bgOf = (v, k) => (v === null ? undefined : (v < OBJECTIFS[k] ? "var(--redSoft)" : undefined));
+  const cell = (v, k) => <td style={{textAlign:"center", fontWeight:600, color:colorOf(v, k), background:bgOf(v, k)}}>{fmt(v, k)}</td>;
+
+  /* ---------- Vue Agent ---------- */
+  const agentRows = useMemo(() => rows.filter((r) => r.agent === fAgent), [rows, fAgent]);
+  const agentInfo = agents.find((a) => a.agent === fAgent) || {};
+  const agentSummary = INDICATEURS.map((k) => {
+    const l = agentRows.filter((r) => r.ind === k && inPeriod(r));
+    const v = avgOf(l);
+    return { k, v, n: l.length };
+  });
+  const gridBy = (list, keys, keyField) => INDICATEURS.map((k) => ({ k, vals: keys.map((x) => avgOf(list.filter((r) => r.ind === k && r[keyField] === x))) }));
+  const agentWeekGrid = gridBy(agentRows, weeksGrid, "sem");
+  const agentMonthGrid = gridBy(agentRows, moisOptions, "mois");
+
+  /* ---------- Vue Équipe ---------- */
+  const rowsP = useMemo(() => rows.filter(inPeriod), [rows, fMois, fSemaine]);
+  const teamTable = useMemo(() => {
+    const list = [...managerOptions, "Total Mada"].map((m) => {
+      const sub = m === "Total Mada" ? rowsP : rowsP.filter((r) => r.mgr === m);
+      return { m, nb: m === "Total Mada" ? agents.length : agents.filter((a) => a.mgr === m).length, vals: INDICATEURS.map((k) => avgOf(sub.filter((r) => r.ind === k))) };
+    });
+    return list;
+  }, [rowsP, managerOptions, agents]);
+  const teamWeekRows = useMemo(() => rows.filter((r) => fManager === "Tous" || r.mgr === fManager), [rows, fManager]);
+  const teamWeekGrid = gridBy(teamWeekRows, weeksGrid, "sem");
+  const agentDetail = useMemo(() => {
+    const byAgent = new Map();
+    rowsP.forEach((r) => { if (!byAgent.has(r.agent)) byAgent.set(r.agent, []); byAgent.get(r.agent).push(r); });
+    return agents
+      .filter((a) => (fManager === "Tous" || a.mgr === fManager) && (fEquipe === "Tous" || a.eq === fEquipe))
+      .map((a) => {
+        const l = byAgent.get(a.agent) || [];
+        const vals = INDICATEURS.map((k) => avgOf(l.filter((r) => r.ind === k)));
+        const nbEcart = vals.filter((v, i) => v !== null && v < OBJECTIFS[INDICATEURS[i]]).length;
+        return { ...a, vals, nbEcart, n: l.length };
+      });
+  }, [rowsP, agents, fManager, fEquipe]);
+
+  const periodTxt = `${fMois === "Tous" ? "Tous mois" : fMois} · ${fSemaine === "Toutes" ? "toutes semaines" : fSemaine}`;
+
+  function exportExcel() {
+    try {
+      const wb = XLSX.utils.book_new();
+      const add = (data, name) => XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data.length ? data : [{ Info: "Aucune donnée" }]), name);
+      const num = (v, k) => (v === null ? "" : Math.round(v * 100) / 100);
+      if (mode === "agent") {
+        add(agentSummary.map((s) => ({ "Indicateur": s.k, "Objectif": OBJECTIFS[s.k], "Résultat": num(s.v, s.k), "Écart": s.v === null ? "" : Math.round((s.v - OBJECTIFS[s.k]) * 100) / 100, "Nb éval.": s.n })), "Période filtrée");
+        add(agentWeekGrid.map((g) => { const o = { "Indicateur": g.k, "Objectif": OBJECTIFS[g.k] }; weeksGrid.forEach((w, i) => { o[w] = num(g.vals[i], g.k); }); return o; }), "Par semaine");
+        add(agentMonthGrid.map((g) => { const o = { "Indicateur": g.k, "Objectif": OBJECTIFS[g.k] }; moisOptions.forEach((m, i) => { o[m] = num(g.vals[i], g.k); }); return o; }), "Par mois");
+        add([{ "Agent": fAgent, "Manager": agentInfo.mgr || "", "Équipe": agentInfo.eq || "", "Mois": fMois, "Semaine": fSemaine, "Export du": new Date().toLocaleString("fr-FR") }], "Filtres");
+        XLSX.writeFile(wb, `Suivi_Agent_${fAgent.replace(/[^A-Za-z0-9]+/g, "_")}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+      } else {
+        add(teamTable.map((t) => { const o = { "Manager": t.m, "Nb agents": t.nb }; INDICATEURS.forEach((k, i) => { o[SHORT[k]] = num(t.vals[i], k); }); return o; }), "Par équipe");
+        add(teamWeekGrid.map((g) => { const o = { "Indicateur": g.k, "Objectif": OBJECTIFS[g.k] }; weeksGrid.forEach((w, i) => { o[w] = num(g.vals[i], g.k); }); return o; }), "Équipe par semaine");
+        add(agentDetail.map((a) => { const o = { "Agent": a.agent, "Manager": a.mgr, "Équipe": a.eq }; INDICATEURS.forEach((k, i) => { o[SHORT[k]] = num(a.vals[i], k); }); o["Nb KPI en écart"] = a.nbEcart; o["Nb éval."] = a.n; return o; }), "Par agent");
+        add([{ "Manager": fManager, "Ancienneté": fEquipe, "Mois": fMois, "Semaine": fSemaine, "Export du": new Date().toLocaleString("fr-FR") }], "Filtres");
+        XLSX.writeFile(wb, `Suivi_Equipes_${new Date().toISOString().slice(0, 10)}.xlsx`);
+      }
+    } catch (err) { alert("Export Excel impossible : " + err.message); }
+  }
+
+  const grid = (g, cols) => (
+    <div style={{overflowX:"auto"}}>
+      <table>
+        <thead><tr>{["Indicateur", "Objectif", ...cols].map((h) => <th key={h}>{h}</th>)}</tr></thead>
+        <tbody>
+          {g.map((row, i) => (
+            <tr key={row.k} style={{backgroundColor: i % 2 ? "var(--grey)" : "#fff"}}>
+              <td style={{fontWeight:500}}>{row.k}</td>
+              <td style={{textAlign:"center", color:"var(--textMuted)", fontSize:12}}>{OBJECTIFS[row.k]}{unit(row.k)}</td>
+              {row.vals.map((v, j) => <React.Fragment key={j}>{cell(v, row.k)}</React.Fragment>)}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  return (
+    <div>
+      <SectionTitle icon="📋">Suivi des résultats par agent et par équipe</SectionTitle>
+      <div className="filters" style={{marginBottom:12}}>
+        <button className={"btn" + (mode === "agent" ? " primary" : "")} onClick={() => setMode("agent")}>Vue Agent</button>
+        <button className={"btn" + (mode === "equipe" ? " primary" : "")} onClick={() => setMode("equipe")}>Vue Équipe</button>
+        <button className="btn primary" style={{marginLeft:"auto"}} onClick={exportExcel}>⬇ Exporter en Excel</button>
+      </div>
+
+      <div className="filters" style={{marginBottom:16}}>
+        {mode === "agent" ? (
+          <>
+            <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600}}>Agent :</span>
+            <select value={fAgent} onChange={(e) => setFAgent(e.target.value)}>
+              {agents.map((a) => <option key={a.agent} value={a.agent}>{a.agent} — {a.mgr}</option>)}
+            </select>
+          </>
+        ) : (
+          <>
+            <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600}}>Manager :</span>
+            <select value={fManager} onChange={(e) => setFManager(e.target.value)}>
+              {["Tous", ...managerOptions].map((m) => <option key={m}>{m}</option>)}
+            </select>
+            <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600, marginLeft:8}}>Ancienneté :</span>
+            <select value={fEquipe} onChange={(e) => setFEquipe(e.target.value)}>
+              {["Tous", "Nouveau", "Ancien", "Départ"].map((m) => <option key={m}>{m}</option>)}
+            </select>
+          </>
+        )}
+        <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600, marginLeft:8}}>Mois :</span>
+        <select value={fMois} onChange={(e) => setFMois(e.target.value)}>
+          {["Tous", ...moisOptions].map((m) => <option key={m}>{m}</option>)}
+        </select>
+        <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600, marginLeft:8}}>Semaine :</span>
+        <select value={fSemaine} onChange={(e) => setFSemaine(e.target.value)}>
+          {["Toutes", ...semOptions].map((m) => <option key={m}>{m}</option>)}
+        </select>
+      </div>
+
+      <div className="notice info" style={{marginBottom:16}}>
+        <span className="ic">ℹ</span>
+        <div>Hubicus et NCC : moyenne des notes. Conformité : % d'évaluations OK (KO et Situation inacceptable comptent 0). Rouge = sous l'objectif. « — » = aucune évaluation sur la période.</div>
+      </div>
+
+      {mode === "agent" ? (
+        <>
+          <div className="card" style={{padding:0, overflow:"hidden", marginBottom:16}}>
+            <div style={{padding:"12px 14px", fontSize:13, fontWeight:600, color:"var(--purpleDark)", borderBottom:"1px solid var(--greyLine)"}}>
+              {fAgent} — {agentInfo.mgr || "—"} ({agentInfo.eq || "—"}) · {periodTxt}
+            </div>
+            <table>
+              <thead><tr>{["Indicateur", "Objectif", "Résultat", "Écart vs objectif", "Nb éval."].map((h) => <th key={h}>{h}</th>)}</tr></thead>
+              <tbody>
+                {agentSummary.map((s, i) => (
+                  <tr key={s.k} style={{backgroundColor: i % 2 ? "var(--grey)" : "#fff"}}>
+                    <td style={{fontWeight:500}}>{s.k}</td>
+                    <td style={{textAlign:"center", color:"var(--textMuted)", fontSize:12}}>{OBJECTIFS[s.k]}{unit(s.k)}</td>
+                    {cell(s.v, s.k)}
+                    <td style={{textAlign:"center", color: s.v !== null && s.v < OBJECTIFS[s.k] ? "var(--red)" : "var(--textMuted)"}}>{s.v === null ? "—" : ((s.v - OBJECTIFS[s.k]) >= 0 ? "+" : "") + (s.v - OBJECTIFS[s.k]).toFixed(s.k.includes("NCC") ? 2 : 1)}</td>
+                    <td style={{textAlign:"center", color:"var(--textMuted)"}}>{s.n}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="card" style={{marginBottom:16}}>
+            <div style={{fontSize:13, fontWeight:600, color:"var(--purpleDark)", marginBottom:10}}>Évolution hebdomadaire — {fAgent}</div>
+            {grid(agentWeekGrid, weeksGrid)}
+          </div>
+          <div className="card">
+            <div style={{fontSize:13, fontWeight:600, color:"var(--purpleDark)", marginBottom:10}}>Évolution mensuelle — {fAgent}</div>
+            {grid(agentMonthGrid, moisOptions)}
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="card" style={{padding:0, overflow:"hidden", marginBottom:16}}>
+            <div style={{padding:"12px 14px", fontSize:13, fontWeight:600, color:"var(--purpleDark)", borderBottom:"1px solid var(--greyLine)"}}>Résultats par équipe — {periodTxt}</div>
+            <div style={{overflowX:"auto"}}>
+              <table>
+                <thead><tr>{["Manager", "Nb agents", ...INDICATEURS.map((k) => SHORT[k])].map((h) => <th key={h}>{h}</th>)}</tr></thead>
+                <tbody>
+                  <tr style={{background:"var(--grey)"}}>
+                    <td style={{fontStyle:"italic"}}>Objectif</td><td></td>
+                    {INDICATEURS.map((k) => <td key={k} style={{textAlign:"center", fontStyle:"italic", color:"var(--textMuted)"}}>{OBJECTIFS[k]}</td>)}
+                  </tr>
+                  {teamTable.map((t) => (
+                    <tr key={t.m} style={t.m === "Total Mada" ? {fontWeight:700, borderTop:"2px solid var(--greyLine)"} : undefined}>
+                      <td style={{fontWeight:600}}>{t.m}</td>
+                      <td style={{textAlign:"center"}}>{t.nb}</td>
+                      {t.vals.map((v, j) => <React.Fragment key={j}>{cell(v, INDICATEURS[j])}</React.Fragment>)}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div className="card" style={{marginBottom:16}}>
+            <div style={{fontSize:13, fontWeight:600, color:"var(--purpleDark)", marginBottom:10}}>Évolution hebdomadaire — équipe : {fManager}</div>
+            {grid(teamWeekGrid, weeksGrid)}
+          </div>
+          <div className="card" style={{padding:0, overflow:"hidden"}}>
+            <div style={{padding:"12px 14px", fontSize:13, fontWeight:600, color:"var(--purpleDark)", borderBottom:"1px solid var(--greyLine)"}}>
+              Détail par agent ({agentDetail.length}) — {periodTxt}
+            </div>
+            <div style={{overflow:"auto", maxHeight:560}}>
+              <table>
+                <thead><tr>{["Agent", "Manager", "Équipe", ...INDICATEURS.map((k) => SHORT[k]), "KPI en écart", "Nb éval."].map((h) => <th key={h}>{h}</th>)}</tr></thead>
+                <tbody>
+                  {agentDetail.map((a, i) => (
+                    <tr key={a.agent} style={{backgroundColor: i % 2 ? "var(--grey)" : "#fff"}}>
+                      <td style={{fontWeight:500}}>{a.agent}</td>
+                      <td>{a.mgr}</td>
+                      <td style={{fontSize:12, color:"var(--textMuted)"}}>{a.eq || "—"}</td>
+                      {a.vals.map((v, j) => <React.Fragment key={j}>{cell(v, INDICATEURS[j])}</React.Fragment>)}
+                      <td style={{textAlign:"center", fontWeight:600, color: a.nbEcart ? "var(--red)" : "var(--textMuted)"}}>{a.nbEcart}</td>
+                      <td style={{textAlign:"center", color:"var(--textMuted)"}}>{a.n}</td>
+                    </tr>
+                  ))}
+                  {agentDetail.length === 0 && <tr><td colSpan={INDICATEURS.length + 5} style={{textAlign:"center", padding:20, color:"var(--textMuted)"}}>Aucun agent pour ces filtres.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
    VUE : ANALYSE (par indicateur)
    ============================================================ */
 function AnalyseView({ ecarts, roster, allEvaluations, nccResponses, criteresEcarts, itemsStats }){
@@ -4585,6 +4872,7 @@ function App(){
   const allTabs = [
     { id:"reporting", label:"Reporting", icon:"📊" },
     { id:"performance", label:"Suivi performance", icon:"📈" },
+    { id:"suivi_resultats", label:"Suivi agents / équipes", icon:"👥" },
     { id:"debriefing", label:"Suivi débriefing", icon:"📋" },
     { id:"analyse", label:"Analyse", icon:"🔍" },
     { id:"si_hubicus", label:"Suivi SI Hubicus", icon:"🚨" },
@@ -4617,7 +4905,7 @@ function App(){
         <div className="wrap header-inner">
           <div>
             <h1>Suivi Qualité — TERSEA Madagascar</h1>
-            <p>Débriefings managers · Reporting · Compte Auchan · Site Mada · <span title="Version du fichier déployé">Version 19/11/2026 (v6)</span></p>
+            <p>Débriefings managers · Reporting · Compte Auchan · Site Mada · <span title="Version du fichier déployé">Version 19/11/2026 (v7)</span></p>
           </div>
           <div className="status" style={{display:"flex", alignItems:"center", gap:10}}>
             <span>💾 {statusLabel}</span>
@@ -4664,6 +4952,7 @@ function App(){
       <div className="wrap content">
         {tab === "reporting" && <ReportingView ecarts={ecarts} weekly={weekly} roster={roster} allEvaluations={allEvaluations} />}
         {tab === "performance" && <PerformanceView ecarts={ecarts} weekly={weekly} roster={roster} allEvaluations={allEvaluations} />}
+        {tab === "suivi_resultats" && <SuiviResultatsView allEvaluations={allEvaluations} roster={roster} />}
         {tab === "debriefing" && <DebriefingView ecarts={ecarts} setEcarts={setEcarts} weekly={weekly} onSaveNow={saveNow} roster={roster} allEvaluations={allEvaluations} criteresEcarts={criteresEcarts} />}
         {tab === "si_hubicus" && <SuiviSIView siHubicus={siHubicus} allEvaluations={allEvaluations} ecarts={ecarts} roster={roster} />}
         {tab === "analyse" && <AnalyseView ecarts={ecarts} roster={roster} allEvaluations={allEvaluations} nccResponses={nccResponses} criteresEcarts={criteresEcarts} itemsStats={itemsStats} />}

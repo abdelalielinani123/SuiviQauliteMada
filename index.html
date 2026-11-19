@@ -3207,6 +3207,8 @@ function SuiviResultatsView({ allEvaluations, roster }) {
   const [fAgent, setFAgent] = useState("");
   const [fManager, setFManager] = useState("Tous");
   const [fEquipe, setFEquipe] = useState("Tous");
+  const [fInd, setFInd] = useState("Tous");
+  const IND = fInd === "Tous" ? INDICATEURS : [fInd];
 
   const unit = (k) => (k.includes("NCC") ? "/10" : "%");
   const fmt = (v, k) => (v === null || v === undefined ? "—" : (k.includes("NCC") ? v.toFixed(2) : v.toFixed(1)));
@@ -3279,25 +3281,25 @@ function SuiviResultatsView({ allEvaluations, roster }) {
   /* ---------- Vue Agent ---------- */
   const agentRows = useMemo(() => rows.filter((r) => r.agent === fAgent), [rows, fAgent]);
   const agentInfo = agents.find((a) => a.agent === fAgent) || {};
-  const agentSummary = INDICATEURS.map((k) => {
+  const agentSummary = IND.map((k) => {
     const l = agentRows.filter((r) => r.ind === k && inPeriod(r));
     const v = avgOf(l);
     return { k, v, n: l.length };
   });
-  const gridBy = (list, keys, keyField) => INDICATEURS.map((k) => ({ k, vals: keys.map((x) => avgOf(list.filter((r) => r.ind === k && r[keyField] === x))) }));
+  const gridBy = (list, keys, keyField) => IND.map((k) => ({ k, vals: keys.map((x) => avgOf(list.filter((r) => r.ind === k && r[keyField] === x))) }));
   const agentWeekGrid = gridBy(agentRows, weeksGrid, "sem");
   const agentMonthGrid = gridBy(agentRows, moisOptions, "mois");
 
   /* ---------- Vue Équipe ---------- */
-  const rowsP = useMemo(() => rows.filter(inPeriod), [rows, fMois, fSemaine]);
+  const rowsP = useMemo(() => rows.filter((r) => inPeriod(r) && (fEquipe === "Tous" || r.eq === fEquipe)), [rows, fMois, fSemaine, fEquipe]);
   const teamTable = useMemo(() => {
     const list = [...managerOptions, "Total Mada"].map((m) => {
       const sub = m === "Total Mada" ? rowsP : rowsP.filter((r) => r.mgr === m);
-      return { m, nb: m === "Total Mada" ? agents.length : agents.filter((a) => a.mgr === m).length, vals: INDICATEURS.map((k) => avgOf(sub.filter((r) => r.ind === k))) };
+      return { m, nb: agents.filter((a) => (m === "Total Mada" || a.mgr === m) && (fEquipe === "Tous" || a.eq === fEquipe)).length, vals: IND.map((k) => avgOf(sub.filter((r) => r.ind === k))) };
     });
     return list;
-  }, [rowsP, managerOptions, agents]);
-  const teamWeekRows = useMemo(() => rows.filter((r) => fManager === "Tous" || r.mgr === fManager), [rows, fManager]);
+  }, [rowsP, managerOptions, agents, fInd, fEquipe]);
+  const teamWeekRows = useMemo(() => rows.filter((r) => (fManager === "Tous" || r.mgr === fManager) && (fEquipe === "Tous" || r.eq === fEquipe)), [rows, fManager, fEquipe]);
   const teamWeekGrid = gridBy(teamWeekRows, weeksGrid, "sem");
   const agentDetail = useMemo(() => {
     const byAgent = new Map();
@@ -3306,11 +3308,52 @@ function SuiviResultatsView({ allEvaluations, roster }) {
       .filter((a) => (fManager === "Tous" || a.mgr === fManager) && (fEquipe === "Tous" || a.eq === fEquipe))
       .map((a) => {
         const l = byAgent.get(a.agent) || [];
-        const vals = INDICATEURS.map((k) => avgOf(l.filter((r) => r.ind === k)));
-        const nbEcart = vals.filter((v, i) => v !== null && v < OBJECTIFS[INDICATEURS[i]]).length;
+        const vals = IND.map((k) => avgOf(l.filter((r) => r.ind === k)));
+        const nbEcart = vals.filter((v, i) => v !== null && v < OBJECTIFS[IND[i]]).length;
         return { ...a, vals, nbEcart, n: l.length };
       });
-  }, [rowsP, agents, fManager, fEquipe]);
+  }, [rowsP, agents, fManager, fEquipe, fInd]);
+
+
+  /* ---------- Historique sur l'indicateur filtré ---------- */
+  const trendOf = (cur, prev, k) => {
+    if (cur === null || prev === null || prev === undefined) return "";
+    const d = cur - prev; const th = k.includes("NCC") ? 0.05 : 0.5;
+    return d > th ? "▲" : (d < -th ? "▼" : "▬");
+  };
+  const histAgent = (keys, field) => {
+    let prev = null;
+    const out = keys.map((x) => {
+      const l = agentRows.filter((r) => r.ind === fInd && r[field] === x);
+      const v = avgOf(l);
+      const o = { x, v, n: l.length, tr: trendOf(v, prev, fInd), delta: v !== null && prev !== null ? v - prev : null };
+      if (v !== null) prev = v;
+      return o;
+    });
+    const first = out.findIndex((o) => o.n > 0);   // on masque les périodes antérieures à la 1re évaluation de l'agent
+    return (first > 0 ? out.slice(first) : out).reverse();
+  };
+  const teamCols = fManager === "Tous" ? [...managerOptions, "Total Mada"] : [fManager, "Total Mada"];
+  const histTeam = (keys, field) => {
+    const base = rows.filter((r) => r.ind === fInd && (fEquipe === "Tous" || r.eq === fEquipe));
+    const prev = {};
+    const out = keys.map((x) => {
+      const cells = teamCols.map((m) => {
+        const l = base.filter((r) => r[field] === x && (m === "Total Mada" || r.mgr === m));
+        const v = avgOf(l);
+        const c = { v, n: l.length, tr: trendOf(v, prev[m], fInd) };
+        if (v !== null) prev[m] = v;
+        return c;
+      });
+      return { x, cells };
+    });
+    return out.reverse();
+  };
+  const hasInd = fInd !== "Tous";
+  const histAgentW = useMemo(() => (hasInd ? histAgent(semOptions, "sem") : []), [agentRows, fInd, semOptions]);
+  const histAgentM = useMemo(() => (hasInd ? histAgent(moisOptions, "mois") : []), [agentRows, fInd, moisOptions]);
+  const histTeamW = useMemo(() => (hasInd ? histTeam(semOptions, "sem") : []), [rows, fInd, semOptions, fManager, fEquipe, managerOptions]);
+  const histTeamM = useMemo(() => (hasInd ? histTeam(moisOptions, "mois") : []), [rows, fInd, moisOptions, fManager, fEquipe, managerOptions]);
 
   const periodTxt = `${fMois === "Tous" ? "Tous mois" : fMois} · ${fSemaine === "Toutes" ? "toutes semaines" : fSemaine}`;
 
@@ -3323,13 +3366,21 @@ function SuiviResultatsView({ allEvaluations, roster }) {
         add(agentSummary.map((s) => ({ "Indicateur": s.k, "Objectif": OBJECTIFS[s.k], "Résultat": num(s.v, s.k), "Écart": s.v === null ? "" : Math.round((s.v - OBJECTIFS[s.k]) * 100) / 100, "Nb éval.": s.n })), "Période filtrée");
         add(agentWeekGrid.map((g) => { const o = { "Indicateur": g.k, "Objectif": OBJECTIFS[g.k] }; weeksGrid.forEach((w, i) => { o[w] = num(g.vals[i], g.k); }); return o; }), "Par semaine");
         add(agentMonthGrid.map((g) => { const o = { "Indicateur": g.k, "Objectif": OBJECTIFS[g.k] }; moisOptions.forEach((m, i) => { o[m] = num(g.vals[i], g.k); }); return o; }), "Par mois");
-        add([{ "Agent": fAgent, "Manager": agentInfo.mgr || "", "Équipe": agentInfo.eq || "", "Mois": fMois, "Semaine": fSemaine, "Export du": new Date().toLocaleString("fr-FR") }], "Filtres");
+        add([{ "Agent": fAgent, "Manager": agentInfo.mgr || "", "Équipe": agentInfo.eq || "", "Indicateur": fInd, "Mois": fMois, "Semaine": fSemaine, "Export du": new Date().toLocaleString("fr-FR") }], "Filtres");
+        if (hasInd) {
+          add(histAgentW.map((h) => ({ "Semaine": h.x, "Résultat": num(h.v, fInd), "Objectif": OBJECTIFS[fInd], "Écart": h.v === null ? "" : Math.round((h.v - OBJECTIFS[fInd]) * 100) / 100, "Nb éval.": h.n, "Tendance": h.tr })), "Historique semaine");
+          add(histAgentM.map((h) => ({ "Mois": h.x, "Résultat": num(h.v, fInd), "Objectif": OBJECTIFS[fInd], "Écart": h.v === null ? "" : Math.round((h.v - OBJECTIFS[fInd]) * 100) / 100, "Nb éval.": h.n, "Tendance": h.tr })), "Historique mois");
+        }
         XLSX.writeFile(wb, `Suivi_Agent_${fAgent.replace(/[^A-Za-z0-9]+/g, "_")}_${new Date().toISOString().slice(0, 10)}.xlsx`);
       } else {
-        add(teamTable.map((t) => { const o = { "Manager": t.m, "Nb agents": t.nb }; INDICATEURS.forEach((k, i) => { o[SHORT[k]] = num(t.vals[i], k); }); return o; }), "Par équipe");
+        add(teamTable.map((t) => { const o = { "Manager": t.m, "Nb agents": t.nb }; IND.forEach((k, i) => { o[SHORT[k]] = num(t.vals[i], k); }); return o; }), "Par équipe");
         add(teamWeekGrid.map((g) => { const o = { "Indicateur": g.k, "Objectif": OBJECTIFS[g.k] }; weeksGrid.forEach((w, i) => { o[w] = num(g.vals[i], g.k); }); return o; }), "Équipe par semaine");
-        add(agentDetail.map((a) => { const o = { "Agent": a.agent, "Manager": a.mgr, "Équipe": a.eq }; INDICATEURS.forEach((k, i) => { o[SHORT[k]] = num(a.vals[i], k); }); o["Nb KPI en écart"] = a.nbEcart; o["Nb éval."] = a.n; return o; }), "Par agent");
-        add([{ "Manager": fManager, "Ancienneté": fEquipe, "Mois": fMois, "Semaine": fSemaine, "Export du": new Date().toLocaleString("fr-FR") }], "Filtres");
+        add(agentDetail.map((a) => { const o = { "Agent": a.agent, "Manager": a.mgr, "Équipe": a.eq }; IND.forEach((k, i) => { o[SHORT[k]] = num(a.vals[i], k); }); o["Nb KPI en écart"] = a.nbEcart; o["Nb éval."] = a.n; return o; }), "Par agent");
+        add([{ "Manager": fManager, "Ancienneté": fEquipe, "Indicateur": fInd, "Mois": fMois, "Semaine": fSemaine, "Export du": new Date().toLocaleString("fr-FR") }], "Filtres");
+        if (hasInd) {
+          add(histTeamW.map((h) => { const o = { "Semaine": h.x }; teamCols.forEach((m, i) => { o[m] = num(h.cells[i].v, fInd); }); return o; }), "Historique semaine");
+          add(histTeamM.map((h) => { const o = { "Mois": h.x }; teamCols.forEach((m, i) => { o[m] = num(h.cells[i].v, fInd); }); return o; }), "Historique mois");
+        }
         XLSX.writeFile(wb, `Suivi_Equipes_${new Date().toISOString().slice(0, 10)}.xlsx`);
       }
     } catch (err) { alert("Export Excel impossible : " + err.message); }
@@ -3381,6 +3432,10 @@ function SuiviResultatsView({ allEvaluations, roster }) {
             </select>
           </>
         )}
+        <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600, marginLeft:8}}>Indicateur :</span>
+        <select value={fInd} onChange={(e) => setFInd(e.target.value)}>
+          {["Tous", ...INDICATEURS].map((m) => <option key={m}>{m}</option>)}
+        </select>
         <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600, marginLeft:8}}>Mois :</span>
         <select value={fMois} onChange={(e) => setFMois(e.target.value)}>
           {["Tous", ...moisOptions].map((m) => <option key={m}>{m}</option>)}
@@ -3417,6 +3472,34 @@ function SuiviResultatsView({ allEvaluations, roster }) {
               </tbody>
             </table>
           </div>
+
+          {hasInd ? (
+            <div className="card" style={{marginBottom:16}}>
+              <div style={{fontSize:13, fontWeight:600, color:"var(--purpleDark)", marginBottom:10}}>Historique — {fAgent} · {fInd} (objectif {OBJECTIFS[fInd]}{unit(fInd)})</div>
+              <div className="grid-2col" style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:16}}>
+                {[["Par semaine", histAgentW, "Semaine"], ["Par mois", histAgentM, "Mois"]].map(([ttl, list, lab]) => (
+                  <div key={ttl} style={{maxHeight:420, overflowY:"auto"}}>
+                    <table>
+                      <thead><tr>{[lab, "Résultat", "Écart", "Nb éval.", "Tendance"].map((h) => <th key={h}>{h}</th>)}</tr></thead>
+                      <tbody>
+                        {list.map((h, i) => (
+                          <tr key={h.x} style={{backgroundColor: i % 2 ? "var(--grey)" : "#fff"}}>
+                            <td style={{fontWeight:500}}>{h.x}</td>
+                            {cell(h.v, fInd)}
+                            <td style={{textAlign:"center", color: h.v !== null && h.v < OBJECTIFS[fInd] ? "var(--red)" : "var(--textMuted)"}}>{h.v === null ? "—" : ((h.v - OBJECTIFS[fInd]) >= 0 ? "+" : "") + (h.v - OBJECTIFS[fInd]).toFixed(fInd.includes("NCC") ? 2 : 1)}</td>
+                            <td style={{textAlign:"center", color:"var(--textMuted)"}}>{h.n}</td>
+                            <td style={{textAlign:"center", color: h.tr === "▲" ? "var(--green)" : (h.tr === "▼" ? "var(--red)" : "var(--textMuted)")}}>{h.tr || "—"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="notice info" style={{marginBottom:16}}><span className="ic">ℹ</span><div>Choisis un indicateur dans le filtre ci-dessus pour afficher l'historique de l'agent sur cet indicateur (par semaine et par mois).</div></div>
+          )}
           <div className="card" style={{marginBottom:16}}>
             <div style={{fontSize:13, fontWeight:600, color:"var(--purpleDark)", marginBottom:10}}>Évolution hebdomadaire — {fAgent}</div>
             {grid(agentWeekGrid, weeksGrid)}
@@ -3432,23 +3515,52 @@ function SuiviResultatsView({ allEvaluations, roster }) {
             <div style={{padding:"12px 14px", fontSize:13, fontWeight:600, color:"var(--purpleDark)", borderBottom:"1px solid var(--greyLine)"}}>Résultats par équipe — {periodTxt}</div>
             <div style={{overflowX:"auto"}}>
               <table>
-                <thead><tr>{["Manager", "Nb agents", ...INDICATEURS.map((k) => SHORT[k])].map((h) => <th key={h}>{h}</th>)}</tr></thead>
+                <thead><tr>{["Manager", "Nb agents", ...IND.map((k) => SHORT[k])].map((h) => <th key={h}>{h}</th>)}</tr></thead>
                 <tbody>
                   <tr style={{background:"var(--grey)"}}>
                     <td style={{fontStyle:"italic"}}>Objectif</td><td></td>
-                    {INDICATEURS.map((k) => <td key={k} style={{textAlign:"center", fontStyle:"italic", color:"var(--textMuted)"}}>{OBJECTIFS[k]}</td>)}
+                    {IND.map((k) => <td key={k} style={{textAlign:"center", fontStyle:"italic", color:"var(--textMuted)"}}>{OBJECTIFS[k]}</td>)}
                   </tr>
                   {teamTable.map((t) => (
                     <tr key={t.m} style={t.m === "Total Mada" ? {fontWeight:700, borderTop:"2px solid var(--greyLine)"} : undefined}>
                       <td style={{fontWeight:600}}>{t.m}</td>
                       <td style={{textAlign:"center"}}>{t.nb}</td>
-                      {t.vals.map((v, j) => <React.Fragment key={j}>{cell(v, INDICATEURS[j])}</React.Fragment>)}
+                      {t.vals.map((v, j) => <React.Fragment key={j}>{cell(v, IND[j])}</React.Fragment>)}
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
           </div>
+
+          {hasInd ? (
+            <div className="card" style={{marginBottom:16}}>
+              <div style={{fontSize:13, fontWeight:600, color:"var(--purpleDark)", marginBottom:10}}>Historique — équipe : {fManager} · {fInd} (objectif {OBJECTIFS[fInd]}{unit(fInd)})</div>
+              <div className="grid-2col" style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:16}}>
+                {[["Par semaine", histTeamW, "Semaine"], ["Par mois", histTeamM, "Mois"]].map(([ttl, list, lab]) => (
+                  <div key={ttl} style={{maxHeight:420, overflow:"auto"}}>
+                    <table>
+                      <thead><tr>{[lab, ...teamCols].map((h) => <th key={h}>{h}</th>)}</tr></thead>
+                      <tbody>
+                        {list.map((h, i) => (
+                          <tr key={h.x} style={{backgroundColor: i % 2 ? "var(--grey)" : "#fff"}}>
+                            <td style={{fontWeight:500}}>{h.x}</td>
+                            {h.cells.map((c, j) => (
+                              <td key={j} style={{textAlign:"center", fontWeight:600, color:colorOf(c.v, fInd), background:bgOf(c.v, fInd)}}>
+                                {fmt(c.v, fInd)}{c.tr ? <span style={{marginLeft:4, fontSize:10, color: c.tr === "▲" ? "var(--green)" : (c.tr === "▼" ? "var(--red)" : "var(--textMuted)")}}>{c.tr}</span> : null}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="notice info" style={{marginBottom:16}}><span className="ic">ℹ</span><div>Choisis un indicateur dans le filtre ci-dessus pour afficher l'historique de l'équipe (un manager ou tous) sur cet indicateur, par semaine et par mois.</div></div>
+          )}
           <div className="card" style={{marginBottom:16}}>
             <div style={{fontSize:13, fontWeight:600, color:"var(--purpleDark)", marginBottom:10}}>Évolution hebdomadaire — équipe : {fManager}</div>
             {grid(teamWeekGrid, weeksGrid)}
@@ -3459,19 +3571,19 @@ function SuiviResultatsView({ allEvaluations, roster }) {
             </div>
             <div style={{overflow:"auto", maxHeight:560}}>
               <table>
-                <thead><tr>{["Agent", "Manager", "Équipe", ...INDICATEURS.map((k) => SHORT[k]), "KPI en écart", "Nb éval."].map((h) => <th key={h}>{h}</th>)}</tr></thead>
+                <thead><tr>{["Agent", "Manager", "Équipe", ...IND.map((k) => SHORT[k]), "KPI en écart", "Nb éval."].map((h) => <th key={h}>{h}</th>)}</tr></thead>
                 <tbody>
                   {agentDetail.map((a, i) => (
                     <tr key={a.agent} style={{backgroundColor: i % 2 ? "var(--grey)" : "#fff"}}>
                       <td style={{fontWeight:500}}>{a.agent}</td>
                       <td>{a.mgr}</td>
                       <td style={{fontSize:12, color:"var(--textMuted)"}}>{a.eq || "—"}</td>
-                      {a.vals.map((v, j) => <React.Fragment key={j}>{cell(v, INDICATEURS[j])}</React.Fragment>)}
+                      {a.vals.map((v, j) => <React.Fragment key={j}>{cell(v, IND[j])}</React.Fragment>)}
                       <td style={{textAlign:"center", fontWeight:600, color: a.nbEcart ? "var(--red)" : "var(--textMuted)"}}>{a.nbEcart}</td>
                       <td style={{textAlign:"center", color:"var(--textMuted)"}}>{a.n}</td>
                     </tr>
                   ))}
-                  {agentDetail.length === 0 && <tr><td colSpan={INDICATEURS.length + 5} style={{textAlign:"center", padding:20, color:"var(--textMuted)"}}>Aucun agent pour ces filtres.</td></tr>}
+                  {agentDetail.length === 0 && <tr><td colSpan={IND.length + 5} style={{textAlign:"center", padding:20, color:"var(--textMuted)"}}>Aucun agent pour ces filtres.</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -4905,7 +5017,7 @@ function App(){
         <div className="wrap header-inner">
           <div>
             <h1>Suivi Qualité — TERSEA Madagascar</h1>
-            <p>Débriefings managers · Reporting · Compte Auchan · Site Mada · <span title="Version du fichier déployé">Version 19/11/2026 (v7)</span></p>
+            <p>Débriefings managers · Reporting · Compte Auchan · Site Mada · <span title="Version du fichier déployé">Version 19/11/2026 (v8)</span></p>
           </div>
           <div className="status" style={{display:"flex", alignItems:"center", gap:10}}>
             <span>💾 {statusLabel}</span>

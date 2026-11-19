@@ -1646,6 +1646,62 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
   );
   const conseillerTrendSeries = fConseiller.map((c, i) => ({ key: c, color: SERIES_COLORS[i % SERIES_COLORS.length] }));
   const objectifKpi = `${OBJECTIFS[kpiFilter]}${kpiFilter.includes("NCC") ? "/10" : "%"}`;
+
+  // Export Excel : reprend exactement ce qui est affiché (KPI, filtres manager/conseiller/période, "en écart uniquement")
+  const exportPerformanceExcel = () => {
+    try {
+      const unitKpi = kpiFilter.includes("NCC") ? "/10" : "%";
+      const periodeTxt = (granBreakdown === "tous" || (periodBreakdown.length === 0 && !dateRangeBreakdown.start && !dateRangeBreakdown.end))
+        ? "Toutes périodes"
+        : [granBreakdown, periodBreakdown.join(", "), dateRangeBreakdown.start ? `du ${dateRangeBreakdown.start} au ${dateRangeBreakdown.end || "…"}` : ""].filter(Boolean).join(" ");
+      const scoreTxt = (c) => c.avgScore !== null ? c.avgScore : (c.hasRawData ? "" : (c.total > 0 ? `${c.total} écart(s)` : "0 écart"));
+      const rowsConseiller = conseillerBreakdown.map((c) => ({
+        "Conseiller": c.conseiller,
+        "Manager": c.manager,
+        "Équipe": c.statutEquipe || "",
+        [`Score (${unitKpi})`]: scoreTxt(c),
+        "Objectif": OBJECTIFS[kpiFilter],
+        "En écart": isEnEcart(c) ? "Oui" : "Non",
+        "Nb éval.": c.hasRawData ? c.nbEval : "",
+        "Écarts débriefés": c.total > 0 ? `${c.done}/${c.total}` : "",
+      }));
+      const rowsEquipe = teamBreakdown.map((x) => ({
+        "Manager": x.manager,
+        "Conseillers en écart": x.nbEnEcart,
+        "Nb conseillers": x.nbConseillers,
+        [`Score équipe (${unitKpi})`]: x.avgScore !== null ? x.avgScore : (x.total > 0 ? `${x.total} écart(s)` : "0 écart"),
+        "Objectif": OBJECTIFS[kpiFilter],
+      }));
+      const rowsEvol = (topTrend || []).map((r) => {
+        const o = { "Période": r.label };
+        series.forEach((s) => { o[s.key] = r[s.key] ?? ""; });
+        return o;
+      });
+      const rowsFiltres = [
+        { "Filtre": "KPI", "Valeur": kpiFilter },
+        { "Filtre": "Période", "Valeur": periodeTxt },
+        { "Filtre": "Manager", "Valeur": fManager.length ? fManager.join(", ") : "Tous" },
+        { "Filtre": "Conseiller", "Valeur": fConseiller.length ? fConseiller.join(", ") : "Tous" },
+        { "Filtre": "Agents en écart uniquement", "Valeur": onlyEnEcart ? "Oui" : "Non" },
+        { "Filtre": "Objectif", "Valeur": objectifKpi },
+        { "Filtre": "Export du", "Valeur": new Date().toLocaleString("fr-FR") },
+      ];
+      const wb = XLSX.utils.book_new();
+      const add = (rows, name, widths) => {
+        const ws = XLSX.utils.json_to_sheet(rows.length ? rows : [{ "Info": "Aucune donnée" }]);
+        if (widths) ws["!cols"] = widths.map((w) => ({ wch: w }));
+        XLSX.utils.book_append_sheet(wb, ws, name);
+      };
+      add(rowsConseiller, "Par conseiller", [24, 16, 12, 14, 10, 10, 10, 16]);
+      add(rowsEquipe, "Par équipe", [16, 20, 16, 18, 10]);
+      add(rowsEvol, "Évolution", [18, 22, 22, 22, 22]);
+      add(rowsFiltres, "Filtres", [28, 60]);
+      const safe = kpiFilter.replace(/[^A-Za-z0-9À-ÿ]+/g, "_").replace(/^_|_$/g, "");
+      XLSX.writeFile(wb, `Suivi_Performance_${safe}_${new Date().toISOString().slice(0,10)}.xlsx`);
+    } catch (err) {
+      alert("Export Excel impossible : " + err.message);
+    }
+  };
   const kpiHasNumericScore = kpiFilter === "Hubicus Voix" || kpiFilter === "Hubicus Mail" || kpiFilter.includes("NCC");
 
   function isEnEcart(c){
@@ -1777,10 +1833,15 @@ function PerformanceView({ ecarts, weekly, roster, allEvaluations }) {
           allowRange={true} dateRange={dateRangeBreakdown} setDateRange={setDateRangeBreakdown}
         />
 
-        <label style={{display:"flex", alignItems:"center", gap:8, fontSize:13, marginBottom:14, cursor:"pointer"}}>
-          <input type="checkbox" checked={onlyEnEcart} onChange={(e) => setOnlyEnEcart(e.target.checked)} />
-          Agents en écart de l'objectif uniquement
-        </label>
+        <div style={{display:"flex", alignItems:"center", gap:16, flexWrap:"wrap", marginBottom:14}}>
+          <label style={{display:"flex", alignItems:"center", gap:8, fontSize:13, cursor:"pointer"}}>
+            <input type="checkbox" checked={onlyEnEcart} onChange={(e) => setOnlyEnEcart(e.target.checked)} />
+            Agents en écart de l'objectif uniquement
+          </label>
+          <button className="btn primary" onClick={exportPerformanceExcel} title="Télécharge les résultats affichés (selon les filtres actuels) au format Excel">
+            ⬇ Exporter en Excel
+          </button>
+        </div>
 
         <div className={"notice " + (hasRawDataForKpi ? "info" : "warn")} style={{marginBottom:14}}>
           <span className="ic">{hasRawDataForKpi ? "ℹ" : "⚠"}</span>
@@ -3190,29 +3251,42 @@ function AnalyseView({ ecarts, roster, allEvaluations, nccResponses, criteresEca
   const managerOptions = useMemo(() => getAllManagers(roster), [roster]);
   const [fManager, setFManager] = useState([]);
   const [fAnciennete, setFAnciennete] = useState("Tous");
+  const [fConseiller, setFConseiller] = useState([]);
+  // Liste des conseillers proposés : restreinte au(x) manager(s) et à l'ancienneté choisis.
+  const conseillerOptionsAn = useMemo(() => getRosterConseillerList(roster)
+    .filter((r) => r.manager !== "RAS")
+    .filter((r) => fManager.length === 0 || fManager.includes(r.manager))
+    .filter((r) => fAnciennete === "Tous" || r.statut === fAnciennete)
+    .map((r) => displayConseillerName(r.conseiller))
+    .sort(), [roster, fManager, fAnciennete, fConseiller]);
+  useEffect(() => {
+    setFConseiller((prev) => { const k = prev.filter((c) => conseillerOptionsAn.includes(c)); return k.length === prev.length ? prev : k; });
+  }, [conseillerOptionsAn]);
+  const filtreActif = fManager.length > 0 || fAnciennete !== "Tous" || fConseiller.length > 0;
   function passesFilters(rawOrDisplayConseiller, dateStr){
     const entry = findRosterEntry(rawOrDisplayConseiller, roster);
     const mgrAt = entry ? (dateStr ? getConseillerManagerFromRoster(rawOrDisplayConseiller, roster, dateStr) : entry.manager) : null;
     if (fManager.length > 0 && (!entry || !fManager.includes(mgrAt))) return false;
     if (fAnciennete !== "Tous" && (!entry || entry.statut !== fAnciennete)) return false;
+    if (fConseiller.length > 0 && (!entry || !fConseiller.includes(displayConseillerName(entry.conseiller)))) return false;
     return true;
   }
 
   const ecartsForMonth = useMemo(
     () => ecarts.filter((e) => inPeriodAn(e.date, e.semaine) && passesFilters(e.conseiller, e.date)),
-    [ecarts, granPeriode, periodeValue, dateRangePeriode, fManager, fAnciennete, roster]
+    [ecarts, granPeriode, periodeValue, dateRangePeriode, fManager, fAnciennete, fConseiller, roster]
   );
   const evalsForMonth = useMemo(
     () => (allEvaluations||[]).filter((ev) => inPeriodAn(ev.date, ev.semaine) && passesFilters(ev.conseiller, ev.date)),
-    [allEvaluations, granPeriode, periodeValue, dateRangePeriode, fManager, fAnciennete, roster]
+    [allEvaluations, granPeriode, periodeValue, dateRangePeriode, fManager, fAnciennete, fConseiller, roster]
   );
   const nccForMonth = useMemo(
     () => (nccResponses||[]).filter((r) => inPeriodAn(r.date, r.semaine || null) && passesFilters(r.conseillerFull || r.conseiller, r.date)),
-    [nccResponses, granPeriode, periodeValue, dateRangePeriode, fManager, fAnciennete, roster]
+    [nccResponses, granPeriode, periodeValue, dateRangePeriode, fManager, fAnciennete, fConseiller, roster]
   );
   const criteresForMonth = useMemo(
     () => (criteresEcarts||[]).filter((c) => c.indicateur === kpiFilter && inPeriodAn(c.date, c.semaine) && passesFilters(c.conseiller, c.date)),
-    [criteresEcarts, kpiFilter, granPeriode, periodeValue, dateRangePeriode, fManager, fAnciennete, roster]
+    [criteresEcarts, kpiFilter, granPeriode, periodeValue, dateRangePeriode, fManager, fAnciennete, fConseiller, roster]
   );
   // Mois calendaires (clé ISO "AAAA-MM") réellement couverts par la sélection en cours — sert à agréger
   // itemsStats (précalculé par mois) quel que soit le type de filtre de période choisi.
@@ -3229,7 +3303,7 @@ function AnalyseView({ ecarts, roster, allEvaluations, nccResponses, criteresEca
   const conseillerBreakdown = useMemo(
     () => computeConseillerScoreBreakdown(ecartsForMonth, roster, kpiFilter, allEvaluations, (ev) => inPeriodAn(ev.date, ev.semaine))
       .filter((c) => passesFilters(c.conseiller)),
-    [ecartsForMonth, roster, kpiFilter, allEvaluations, granPeriode, periodeValue, dateRangePeriode, fManager, fAnciennete]
+    [ecartsForMonth, roster, kpiFilter, allEvaluations, granPeriode, periodeValue, dateRangePeriode, fManager, fAnciennete, fConseiller]
   );
   const ccsEnEcart = useMemo(() => conseillerBreakdown
     .filter((c) => c.hasRawData ? (c.avgScore !== null && c.avgScore < objectif) : c.total > 0)
@@ -3301,6 +3375,7 @@ function AnalyseView({ ecarts, roster, allEvaluations, nccResponses, criteresEca
         <select value={fAnciennete} onChange={(e) => setFAnciennete(e.target.value)}>
           {["Tous","Nouveau","Ancien"].map((s) => <option key={s}>{s}</option>)}
         </select>
+        <MultiSelectDropdown label="Conseiller :" options={conseillerOptionsAn} selected={fConseiller} setSelected={setFConseiller} />
       </div>
 
       <PeriodFilter
@@ -3333,7 +3408,7 @@ function AnalyseView({ ecarts, roster, allEvaluations, nccResponses, criteresEca
                     <span>{it.item} — {it.count} écart(s)</span>
                     {res && res.taux !== null && (
                       <span className="badge" style={{background: res.taux < OBJECTIFS[kpiFilter] ? "var(--redSoft)" : "var(--greenSoft, #E3F5EC)", color: res.taux < OBJECTIFS[kpiFilter] ? "var(--red)" : "var(--green)"}}>
-                        Résultat : {res.taux}% ({res.ok}/{res.total}) — objectif {OBJECTIFS[kpiFilter]}%
+                        Résultat{filtreActif ? " équipe entière" : ""} : {res.taux}% ({res.ok}/{res.total}) — objectif {OBJECTIFS[kpiFilter]}%
                       </span>
                     )}
                   </div>
@@ -3375,7 +3450,7 @@ function AnalyseView({ ecarts, roster, allEvaluations, nccResponses, criteresEca
                     <span>{it.item} — {it.count} écart(s)</span>
                     {res && res.taux !== null && (
                       <span className="badge" style={{background: res.taux < OBJECTIFS[kpiFilter] ? "var(--redSoft)" : "var(--greenSoft, #E3F5EC)", color: res.taux < OBJECTIFS[kpiFilter] ? "var(--red)" : "var(--green)"}}>
-                        Résultat : {res.taux}% ({res.ok}/{res.total}) — objectif {OBJECTIFS[kpiFilter]}%
+                        Résultat{filtreActif ? " équipe entière" : ""} : {res.taux}% ({res.ok}/{res.total}) — objectif {OBJECTIFS[kpiFilter]}%
                       </span>
                     )}
                   </div>
@@ -4542,7 +4617,7 @@ function App(){
         <div className="wrap header-inner">
           <div>
             <h1>Suivi Qualité — TERSEA Madagascar</h1>
-            <p>Débriefings managers · Reporting · Compte Auchan · Site Mada · <span title="Version du fichier déployé">Version 29/10/2026 (v4)</span></p>
+            <p>Débriefings managers · Reporting · Compte Auchan · Site Mada · <span title="Version du fichier déployé">Version 19/11/2026 (v6)</span></p>
           </div>
           <div className="status" style={{display:"flex", alignItems:"center", gap:10}}>
             <span>💾 {statusLabel}</span>

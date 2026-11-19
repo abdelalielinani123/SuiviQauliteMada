@@ -3208,6 +3208,9 @@ function SuiviResultatsView({ allEvaluations, roster }) {
   const [fManager, setFManager] = useState("Tous");
   const [fEquipe, setFEquipe] = useState("Tous");
   const [fInd, setFInd] = useState("Tous");
+  const [fJour, setFJour] = useState("");
+  const [fDu, setFDu] = useState("");
+  const [fAu, setFAu] = useState("");
   const IND = fInd === "Tous" ? INDICATEURS : [fInd];
 
   const unit = (k) => (k.includes("NCC") ? "/10" : "%");
@@ -3245,14 +3248,18 @@ function SuiviResultatsView({ allEvaluations, roster }) {
       if (!mgr || mgr === "RAS") mgr = "Départ / sans manager";
       const wk = e.semaine ? String(e.semaine).toUpperCase() : "";
       const sem = isoYear(e.date) === 2026 ? wk : `${wk}-${String(isoYear(e.date)).slice(2)}`;
-      out.push({ agent: agentLabel, mgr, eq: (entry && entry.statut) || "", ind, score, sem, mois: e.date.slice(0, 7) });
+      out.push({ date: e.date, agent: agentLabel, mgr, eq: (entry && entry.statut) || "", ind, score, sem, mois: e.date.slice(0, 7) });
     });
     return out;
   }, [allEvaluations, roster, nameByCode]);
 
   const moisOptions = useMemo(() => [...new Set(rows.map((r) => r.mois))].sort(), [rows]);
   const semOptions = useMemo(() => [...new Set(rows.map((r) => r.sem))].filter((s) => /^S\d+$/.test(s)).sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1))), [rows]);
-  const weeksGrid = semOptions.slice(-12);
+  // Plage de dates (Du / Au) : borne aussi les grilles et les historiques
+  const rowsR = useMemo(() => rows.filter((r) => (!fDu || r.date >= fDu) && (!fAu || r.date <= fAu)), [rows, fDu, fAu]);
+  const semHist = useMemo(() => [...new Set(rowsR.map((r) => r.sem))].filter((s) => /^S\d+$/.test(s)).sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1))), [rowsR]);
+  const moisHist = useMemo(() => [...new Set(rowsR.map((r) => r.mois))].sort(), [rowsR]);
+  const weeksGrid = (fDu || fAu) ? semHist : semOptions.slice(-12);
 
   // Agents connus : roster (hors départs sans évaluation) + agents ayant des évaluations
   const agents = useMemo(() => {
@@ -3272,14 +3279,14 @@ function SuiviResultatsView({ allEvaluations, roster }) {
 
   useEffect(() => { if (!fAgent && agents.length) setFAgent(agents[0].agent); }, [agents]);
 
-  const inPeriod = (r) => (fMois === "Tous" || r.mois === fMois) && (fSemaine === "Toutes" || r.sem === fSemaine);
+  const inPeriod = (r) => (fMois === "Tous" || r.mois === fMois) && (fSemaine === "Toutes" || r.sem === fSemaine) && (!fJour || r.date === fJour) && (!fDu || r.date >= fDu) && (!fAu || r.date <= fAu);
   const avgOf = (list) => (list.length ? list.reduce((s, r) => s + r.score, 0) / list.length : null);
   const colorOf = (v, k) => (v === null ? "var(--textMuted)" : (v < OBJECTIFS[k] ? "var(--red)" : "var(--green)"));
   const bgOf = (v, k) => (v === null ? undefined : (v < OBJECTIFS[k] ? "var(--redSoft)" : undefined));
   const cell = (v, k) => <td style={{textAlign:"center", fontWeight:600, color:colorOf(v, k), background:bgOf(v, k)}}>{fmt(v, k)}</td>;
 
   /* ---------- Vue Agent ---------- */
-  const agentRows = useMemo(() => rows.filter((r) => r.agent === fAgent), [rows, fAgent]);
+  const agentRows = useMemo(() => rowsR.filter((r) => r.agent === fAgent), [rowsR, fAgent]);
   const agentInfo = agents.find((a) => a.agent === fAgent) || {};
   const agentSummary = IND.map((k) => {
     const l = agentRows.filter((r) => r.ind === k && inPeriod(r));
@@ -3288,10 +3295,10 @@ function SuiviResultatsView({ allEvaluations, roster }) {
   });
   const gridBy = (list, keys, keyField) => IND.map((k) => ({ k, vals: keys.map((x) => avgOf(list.filter((r) => r.ind === k && r[keyField] === x))) }));
   const agentWeekGrid = gridBy(agentRows, weeksGrid, "sem");
-  const agentMonthGrid = gridBy(agentRows, moisOptions, "mois");
+  const agentMonthGrid = gridBy(agentRows, moisHist, "mois");
 
   /* ---------- Vue Équipe ---------- */
-  const rowsP = useMemo(() => rows.filter((r) => inPeriod(r) && (fEquipe === "Tous" || r.eq === fEquipe)), [rows, fMois, fSemaine, fEquipe]);
+  const rowsP = useMemo(() => rows.filter((r) => inPeriod(r) && (fEquipe === "Tous" || r.eq === fEquipe)), [rows, fMois, fSemaine, fEquipe, fJour, fDu, fAu]);
   const teamTable = useMemo(() => {
     const list = [...managerOptions, "Total Mada"].map((m) => {
       const sub = m === "Total Mada" ? rowsP : rowsP.filter((r) => r.mgr === m);
@@ -3299,7 +3306,7 @@ function SuiviResultatsView({ allEvaluations, roster }) {
     });
     return list;
   }, [rowsP, managerOptions, agents, fInd, fEquipe]);
-  const teamWeekRows = useMemo(() => rows.filter((r) => (fManager === "Tous" || r.mgr === fManager) && (fEquipe === "Tous" || r.eq === fEquipe)), [rows, fManager, fEquipe]);
+  const teamWeekRows = useMemo(() => rowsR.filter((r) => (fManager === "Tous" || r.mgr === fManager) && (fEquipe === "Tous" || r.eq === fEquipe)), [rowsR, fManager, fEquipe]);
   const teamWeekGrid = gridBy(teamWeekRows, weeksGrid, "sem");
   const agentDetail = useMemo(() => {
     const byAgent = new Map();
@@ -3335,7 +3342,7 @@ function SuiviResultatsView({ allEvaluations, roster }) {
   };
   const teamCols = fManager === "Tous" ? [...managerOptions, "Total Mada"] : [fManager, "Total Mada"];
   const histTeam = (keys, field) => {
-    const base = rows.filter((r) => r.ind === fInd && (fEquipe === "Tous" || r.eq === fEquipe));
+    const base = rowsR.filter((r) => r.ind === fInd && (fEquipe === "Tous" || r.eq === fEquipe));
     const prev = {};
     const out = keys.map((x) => {
       const cells = teamCols.map((m) => {
@@ -3350,12 +3357,12 @@ function SuiviResultatsView({ allEvaluations, roster }) {
     return out.reverse();
   };
   const hasInd = fInd !== "Tous";
-  const histAgentW = useMemo(() => (hasInd ? histAgent(semOptions, "sem") : []), [agentRows, fInd, semOptions]);
-  const histAgentM = useMemo(() => (hasInd ? histAgent(moisOptions, "mois") : []), [agentRows, fInd, moisOptions]);
-  const histTeamW = useMemo(() => (hasInd ? histTeam(semOptions, "sem") : []), [rows, fInd, semOptions, fManager, fEquipe, managerOptions]);
-  const histTeamM = useMemo(() => (hasInd ? histTeam(moisOptions, "mois") : []), [rows, fInd, moisOptions, fManager, fEquipe, managerOptions]);
+  const histAgentW = useMemo(() => (hasInd ? histAgent(semHist, "sem") : []), [agentRows, fInd, semHist]);
+  const histAgentM = useMemo(() => (hasInd ? histAgent(moisHist, "mois") : []), [agentRows, fInd, moisHist]);
+  const histTeamW = useMemo(() => (hasInd ? histTeam(semHist, "sem") : []), [rowsR, fInd, semHist, fManager, fEquipe, managerOptions]);
+  const histTeamM = useMemo(() => (hasInd ? histTeam(moisHist, "mois") : []), [rowsR, fInd, moisHist, fManager, fEquipe, managerOptions]);
 
-  const periodTxt = `${fMois === "Tous" ? "Tous mois" : fMois} · ${fSemaine === "Toutes" ? "toutes semaines" : fSemaine}`;
+  const periodTxt = `${fMois === "Tous" ? "Tous mois" : fMois} · ${fSemaine === "Toutes" ? "toutes semaines" : fSemaine}` + (fJour ? ` · jour ${fJour}` : "") + ((fDu || fAu) ? ` · plage ${fDu || "…"} → ${fAu || "…"}` : "");
 
   function exportExcel() {
     try {
@@ -3365,8 +3372,8 @@ function SuiviResultatsView({ allEvaluations, roster }) {
       if (mode === "agent") {
         add(agentSummary.map((s) => ({ "Indicateur": s.k, "Objectif": OBJECTIFS[s.k], "Résultat": num(s.v, s.k), "Écart": s.v === null ? "" : Math.round((s.v - OBJECTIFS[s.k]) * 100) / 100, "Nb éval.": s.n })), "Période filtrée");
         add(agentWeekGrid.map((g) => { const o = { "Indicateur": g.k, "Objectif": OBJECTIFS[g.k] }; weeksGrid.forEach((w, i) => { o[w] = num(g.vals[i], g.k); }); return o; }), "Par semaine");
-        add(agentMonthGrid.map((g) => { const o = { "Indicateur": g.k, "Objectif": OBJECTIFS[g.k] }; moisOptions.forEach((m, i) => { o[m] = num(g.vals[i], g.k); }); return o; }), "Par mois");
-        add([{ "Agent": fAgent, "Manager": agentInfo.mgr || "", "Équipe": agentInfo.eq || "", "Indicateur": fInd, "Mois": fMois, "Semaine": fSemaine, "Export du": new Date().toLocaleString("fr-FR") }], "Filtres");
+        add(agentMonthGrid.map((g) => { const o = { "Indicateur": g.k, "Objectif": OBJECTIFS[g.k] }; moisHist.forEach((m, i) => { o[m] = num(g.vals[i], g.k); }); return o; }), "Par mois");
+        add([{ "Agent": fAgent, "Manager": agentInfo.mgr || "", "Équipe": agentInfo.eq || "", "Indicateur": fInd, "Mois": fMois, "Semaine": fSemaine, "Jour": fJour || "—", "Plage": (fDu || fAu) ? `${fDu || "…"} → ${fAu || "…"}` : "—", "Export du": new Date().toLocaleString("fr-FR") }], "Filtres");
         if (hasInd) {
           add(histAgentW.map((h) => ({ "Semaine": h.x, "Résultat": num(h.v, fInd), "Objectif": OBJECTIFS[fInd], "Écart": h.v === null ? "" : Math.round((h.v - OBJECTIFS[fInd]) * 100) / 100, "Nb éval.": h.n, "Tendance": h.tr })), "Historique semaine");
           add(histAgentM.map((h) => ({ "Mois": h.x, "Résultat": num(h.v, fInd), "Objectif": OBJECTIFS[fInd], "Écart": h.v === null ? "" : Math.round((h.v - OBJECTIFS[fInd]) * 100) / 100, "Nb éval.": h.n, "Tendance": h.tr })), "Historique mois");
@@ -3376,7 +3383,7 @@ function SuiviResultatsView({ allEvaluations, roster }) {
         add(teamTable.map((t) => { const o = { "Manager": t.m, "Nb agents": t.nb }; IND.forEach((k, i) => { o[SHORT[k]] = num(t.vals[i], k); }); return o; }), "Par équipe");
         add(teamWeekGrid.map((g) => { const o = { "Indicateur": g.k, "Objectif": OBJECTIFS[g.k] }; weeksGrid.forEach((w, i) => { o[w] = num(g.vals[i], g.k); }); return o; }), "Équipe par semaine");
         add(agentDetail.map((a) => { const o = { "Agent": a.agent, "Manager": a.mgr, "Équipe": a.eq }; IND.forEach((k, i) => { o[SHORT[k]] = num(a.vals[i], k); }); o["Nb KPI en écart"] = a.nbEcart; o["Nb éval."] = a.n; return o; }), "Par agent");
-        add([{ "Manager": fManager, "Ancienneté": fEquipe, "Indicateur": fInd, "Mois": fMois, "Semaine": fSemaine, "Export du": new Date().toLocaleString("fr-FR") }], "Filtres");
+        add([{ "Manager": fManager, "Ancienneté": fEquipe, "Indicateur": fInd, "Mois": fMois, "Semaine": fSemaine, "Jour": fJour || "—", "Plage": (fDu || fAu) ? `${fDu || "…"} → ${fAu || "…"}` : "—", "Export du": new Date().toLocaleString("fr-FR") }], "Filtres");
         if (hasInd) {
           add(histTeamW.map((h) => { const o = { "Semaine": h.x }; teamCols.forEach((m, i) => { o[m] = num(h.cells[i].v, fInd); }); return o; }), "Historique semaine");
           add(histTeamM.map((h) => { const o = { "Mois": h.x }; teamCols.forEach((m, i) => { o[m] = num(h.cells[i].v, fInd); }); return o; }), "Historique mois");
@@ -3444,11 +3451,20 @@ function SuiviResultatsView({ allEvaluations, roster }) {
         <select value={fSemaine} onChange={(e) => setFSemaine(e.target.value)}>
           {["Toutes", ...semOptions].map((m) => <option key={m}>{m}</option>)}
         </select>
+        <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600, marginLeft:8}}>Jour :</span>
+        <input type="date" value={fJour} onChange={(e) => { setFJour(e.target.value); if (e.target.value) { setFDu(""); setFAu(""); } }} />
+        <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600, marginLeft:8}}>Plage du</span>
+        <input type="date" value={fDu} max={fAu || undefined} onChange={(e) => { setFDu(e.target.value); if (e.target.value) setFJour(""); }} />
+        <span style={{fontSize:12, color:"var(--textMuted)", fontWeight:600}}>au</span>
+        <input type="date" value={fAu} min={fDu || undefined} onChange={(e) => { setFAu(e.target.value); if (e.target.value) setFJour(""); }} />
+        {(fJour || fDu || fAu || fMois !== "Tous" || fSemaine !== "Toutes") && (
+          <button className="btn" onClick={() => { setFJour(""); setFDu(""); setFAu(""); setFMois("Tous"); setFSemaine("Toutes"); }}>Réinitialiser la période</button>
+        )}
       </div>
 
       <div className="notice info" style={{marginBottom:16}}>
         <span className="ic">ℹ</span>
-        <div>Hubicus et NCC : moyenne des notes. Conformité : % d'évaluations OK (KO et Situation inacceptable comptent 0). Rouge = sous l'objectif. « — » = aucune évaluation sur la période.</div>
+        <div>Hubicus et NCC : moyenne des notes. Conformité : % d'évaluations OK (KO et Situation inacceptable comptent 0). Rouge = sous l'objectif. « — » = aucune évaluation sur la période. Les filtres Mois, Semaine, Jour et Plage se cumulent ; la plage (Du / Au) borne aussi les grilles et l'historique.</div>
       </div>
 
       {mode === "agent" ? (
@@ -3506,7 +3522,7 @@ function SuiviResultatsView({ allEvaluations, roster }) {
           </div>
           <div className="card">
             <div style={{fontSize:13, fontWeight:600, color:"var(--purpleDark)", marginBottom:10}}>Évolution mensuelle — {fAgent}</div>
-            {grid(agentMonthGrid, moisOptions)}
+            {grid(agentMonthGrid, moisHist)}
           </div>
         </>
       ) : (
@@ -5017,7 +5033,7 @@ function App(){
         <div className="wrap header-inner">
           <div>
             <h1>Suivi Qualité — TERSEA Madagascar</h1>
-            <p>Débriefings managers · Reporting · Compte Auchan · Site Mada · <span title="Version du fichier déployé">Version 19/11/2026 (v8)</span></p>
+            <p>Débriefings managers · Reporting · Compte Auchan · Site Mada · <span title="Version du fichier déployé">Version 19/11/2026 (v9)</span></p>
           </div>
           <div className="status" style={{display:"flex", alignItems:"center", gap:10}}>
             <span>💾 {statusLabel}</span>

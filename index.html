@@ -3200,6 +3200,213 @@ function addDaysISO(dateStr, days){
    Mêmes règles que le fichier Excel de suivi : Hubicus et NCC = moyenne des notes ; conformité = % d'évaluations OK
    (KO et Situation inacceptable comptent 0). Manager = celui du dispatch du mois de l'évaluation.
    ============================================================ */
+/* ============================================================
+   PAP — Plan d'accompagnement à la performance
+   Conseillers en écart de l'objectif 3 semaines d'affilée (par indicateur)
+   ============================================================ */
+function PAPView({ allEvaluations, roster }) {
+  const [fInd, setFInd] = useState("Tous");
+  const [fManager, setFManager] = useState("Tous");
+  const [fEq, setFEq] = useState("Tous");
+  const [fRef, setFRef] = useState("");
+  const [tolerant, setTolerant] = useState(false);
+  const [nbSem, setNbSem] = useState(3);
+  const [minEval, setMinEval] = useState(1);
+
+  const unit = (k) => (k.includes("NCC") ? "/10" : "%");
+  const fmt = (v, k) => (v === null || v === undefined ? "—" : (k.includes("NCC") ? v.toFixed(2) : v.toFixed(1)));
+  const isoYear = (ds) => { const d = new Date(ds + "T00:00:00Z"); const t = new Date(d); t.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7)); return t.getUTCFullYear(); };
+  const niceName = (s) => { const n = displayConseillerName(s); return n.charAt(0).toUpperCase() + n.slice(1).toLowerCase(); };
+  const nameByCode = useMemo(() => {
+    const cnt = {};
+    (allEvaluations || []).forEach((e) => { const c = rosterCodeOf(e && e.conseiller); if (!c) return; const n = niceName(e.conseiller); (cnt[c] = cnt[c] || {})[n] = (cnt[c][n] || 0) + 1; });
+    const out = {};
+    Object.keys(cnt).forEach((c) => { out[c] = Object.entries(cnt[c]).sort((a, b) => b[1] - a[1])[0][0]; });
+    return out;
+  }, [allEvaluations]);
+
+  // Numéro de semaine absolu (année*100 + semaine ISO) pour comparer / enchaîner les semaines
+  const wkKey = (e) => { const w = parseInt(String(e.semaine || "").replace(/\D/g, ""), 10); return isNaN(w) ? null : isoYear(e.date) * 100 + w; };
+  const prevWeek = (k) => { const y = Math.floor(k / 100), w = k % 100; return w > 1 ? y * 100 + (w - 1) : (y - 1) * 100 + 52; };
+  const lab = (k) => "S" + (k % 100);
+
+  // Une ligne par agent (code) × indicateur × semaine : moyenne et nb d'évaluations
+  const { cells, weeks, agentInfo } = useMemo(() => {
+    const cells = new Map(), info = new Map(), wset = new Set();
+    (allEvaluations || []).forEach((e) => {
+      if (!e || !e.date || !OBJECTIFS[e.indicateur]) return;
+      const code = rosterCodeOf(e.conseiller); if (!code) return;
+      const wk = wkKey(e); if (wk === null) return;
+      let score;
+      if (e.indicateur.startsWith("Hubicus") || e.indicateur.startsWith("NCC")) { if (e.score === null || e.score === undefined || isNaN(Number(e.score))) return; score = Number(e.score); }
+      else score = String(e.statut || "").toUpperCase() === "OK" ? 100 : 0;
+      const key = code + "|" + e.indicateur + "|" + wk;
+      const c = cells.get(key) || { s: 0, n: 0 }; c.s += score; c.n += 1; cells.set(key, c);
+      wset.add(wk);
+      const ent = findRosterEntry(e.conseiller, roster, e.date);
+      let mgr = getConseillerManagerFromRoster(e.conseiller, roster, e.date);
+      if (!mgr || mgr === "RAS") mgr = "Départ / sans manager";
+      const prev = info.get(code);
+      if (!prev || e.date >= prev.date) info.set(code, { code, date: e.date, mgr, eq: (ent && ent.statut) || "", name: nameByCode[code] || niceName(e.conseiller) });
+    });
+    return { cells, weeks: [...wset].sort((a, b) => a - b), agentInfo: info };
+  }, [allEvaluations, roster, nameByCode]);
+
+  const lastWeek = weeks.length ? weeks[weeks.length - 1] : null;
+  const refWeek = fRef ? parseInt(fRef, 10) : lastWeek;
+  const IND = fInd === "Tous" ? INDICATEURS.filter((k) => OBJECTIFS[k]) : [fInd];
+
+  // Détection : série de nbSem semaines (consécutives, ou 3 dernières semaines avec évaluation si "tolérant") se terminant à la semaine de référence, toutes sous l'objectif
+  const { pap, watch } = useMemo(() => {
+    const pap = [], watch = [];
+    if (!refWeek) return { pap, watch };
+    const byAgentInd = new Map();
+    cells.forEach((v, key) => { const [code, ind, wk] = key.split("|"); const k = code + "|" + ind; if (!byAgentInd.has(k)) byAgentInd.set(k, []); byAgentInd.get(k).push({ wk: parseInt(wk, 10), v: v.s / v.n, n: v.n }); });
+    byAgentInd.forEach((list, k) => {
+      const [code, ind] = k.split("|");
+      if (!IND.includes(ind)) return;
+      const info = agentInfo.get(code); if (!info) return;
+      if (fManager !== "Tous" && info.mgr !== fManager) return;
+      if (fEq !== "Tous" && info.eq !== fEq) return;
+      const m = new Map(list.map((x) => [x.wk, x]));
+      const obj = OBJECTIFS[ind];
+      const seriesFor = (len) => {
+        let ser = [];
+        if (!tolerant) { let w = refWeek; for (let i = 0; i < len; i++) { const x = m.get(w); if (!x || x.n < minEval) return null; ser.unshift(x); w = prevWeek(w); } }
+        else { const ok = list.filter((x) => x.wk <= refWeek && x.n >= minEval).sort((a, b) => a.wk - b.wk); if (ok.length < len || ok[ok.length - 1].wk !== refWeek) return null; ser = ok.slice(-len); }
+        return ser;
+      };
+      const ser = seriesFor(nbSem);
+      if (ser && ser.every((x) => x.v < obj)) {
+        // durée réelle de la série d'écart (jusqu'à 12 semaines)
+        let streak = nbSem, w = prevWeek(ser[0].wk);
+        if (!tolerant) { while (streak < 12 && m.get(w) && m.get(w).n >= minEval && m.get(w).v < obj) { streak++; w = prevWeek(w); } }
+        const moy = ser.reduce((s, x) => s + x.v, 0) / ser.length;
+        pap.push({ code, ind, info, ser, moy, ecart: moy - obj, streak, ntot: ser.reduce((s, x) => s + x.n, 0) });
+      } else if (nbSem > 2) {
+        const s2 = seriesFor(nbSem - 1);
+        if (s2 && s2.every((x) => x.v < obj)) watch.push({ code, ind, info, ser: s2, moy: s2.reduce((s, x) => s + x.v, 0) / s2.length });
+      }
+    });
+    const rel = (x, ind) => (x.moy - OBJECTIFS[ind]) / OBJECTIFS[ind];
+    pap.sort((a, b) => a.info.mgr.localeCompare(b.info.mgr) || a.info.name.localeCompare(b.info.name) || rel(a, a.ind) - rel(b, b.ind));
+    watch.sort((a, b) => a.info.name.localeCompare(b.info.name));
+    return { pap, watch };
+  }, [cells, agentInfo, refWeek, tolerant, nbSem, minEval, fInd, fManager, fEq]);
+
+  const managerOptions = useMemo(() => [...new Set([...agentInfo.values()].map((a) => a.mgr))].sort(), [agentInfo]);
+  const nbAgents = new Set(pap.map((p) => p.code)).size;
+  const byInd = {}; pap.forEach((p) => { byInd[p.ind] = (byInd[p.ind] || 0) + 1; });
+  const byMgr = {}; pap.forEach((p) => { (byMgr[p.info.mgr] = byMgr[p.info.mgr] || new Set()).add(p.code); });
+  const weeksLabel = refWeek ? `${lab(refWeek - (nbSem - 1))} → ${lab(refWeek)}` : "";
+
+  function exportExcel() {
+    try {
+      const wb = XLSX.utils.book_new();
+      const add = (data, name) => XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data.length ? data : [{ Info: "Aucun conseiller concerné" }]), name);
+      const r2 = (v) => Math.round(v * 100) / 100;
+      add(pap.map((p) => { const o = { "Conseiller": p.info.name, "Code": "TER_PST32_" + p.code, "Manager": p.info.mgr, "Ancienneté": p.info.eq, "Indicateur": p.ind, "Objectif": OBJECTIFS[p.ind] }; p.ser.forEach((x) => { o[lab(x.wk)] = r2(x.v); o[lab(x.wk) + " (nb éval.)"] = x.n; }); o["Moyenne sur la série"] = r2(p.moy); o["Écart à l'objectif"] = r2(p.ecart); o["Semaines d'écart d'affilée"] = p.streak; o["Statut PAP"] = "À lancer"; o["Date de lancement"] = ""; o["Actions / commentaires"] = ""; return o; }), "PAP");
+      add(watch.map((p) => ({ "Conseiller": p.info.name, "Manager": p.info.mgr, "Indicateur": p.ind, "Objectif": OBJECTIFS[p.ind], "Semaines": p.ser.map((x) => lab(x.wk) + " : " + r2(x.v)).join(" | "), "Moyenne": r2(p.moy) })), "À surveiller");
+      add([{ "Règle": `Écart à l'objectif ${nbSem} semaines d'affilée (${weeksLabel})`, "Semaines sans évaluation": tolerant ? "ignorées" : "rompent la série", "Nb min. d'évaluations / semaine": minEval, "Export du": new Date().toLocaleString("fr-FR") }], "Paramètres");
+      XLSX.writeFile(wb, `PAP_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    } catch (err) { alert("Export Excel impossible : " + err.message); }
+  }
+
+  const lbl = { fontSize: 12, color: "var(--textMuted)", fontWeight: 600, marginLeft: 8 };
+  return (
+    <div>
+      <SectionTitle icon="🧭">PAP — Plan d'accompagnement à la performance</SectionTitle>
+      <p style={{fontSize:13, color:"var(--textMuted)", margin:"0 0 12px"}}>
+        Conseillers dont le résultat hebdomadaire est <b>sous l'objectif {nbSem} semaines d'affilée</b> sur un indicateur (série se terminant à la semaine de référence). Hubicus et NCC : note moyenne de la semaine ; conformité : % d'évaluations OK.
+      </p>
+      <div className="filters" style={{marginBottom:12}}>
+        <span style={{...lbl, marginLeft:0}}>Semaine de référence :</span>
+        <select value={fRef || (lastWeek || "")} onChange={(e) => setFRef(e.target.value)}>
+          {[...weeks].reverse().slice(0, 16).map((w) => <option key={w} value={w}>{lab(w)}{w === lastWeek ? " (dernière)" : ""}</option>)}
+        </select>
+        <span style={lbl}>Série :</span>
+        <select value={nbSem} onChange={(e) => setNbSem(parseInt(e.target.value, 10))}>
+          {[2, 3, 4].map((n) => <option key={n} value={n}>{n} semaines</option>)}
+        </select>
+        <span style={lbl}>Indicateur :</span>
+        <select value={fInd} onChange={(e) => setFInd(e.target.value)}>
+          {["Tous", ...INDICATEURS].map((m) => <option key={m}>{m}</option>)}
+        </select>
+        <span style={lbl}>Manager :</span>
+        <select value={fManager} onChange={(e) => setFManager(e.target.value)}>
+          {["Tous", ...managerOptions].map((m) => <option key={m}>{m}</option>)}
+        </select>
+        <span style={lbl}>Ancienneté :</span>
+        <select value={fEq} onChange={(e) => setFEq(e.target.value)}>
+          {["Tous", "Nouveau", "Ancien", "Départ"].map((m) => <option key={m}>{m}</option>)}
+        </select>
+        <span style={lbl}>Min. éval. / semaine :</span>
+        <select value={minEval} onChange={(e) => setMinEval(parseInt(e.target.value, 10))}>
+          {[1, 2, 3, 5].map((n) => <option key={n} value={n}>{n}</option>)}
+        </select>
+        <label style={{...lbl, display:"inline-flex", alignItems:"center", gap:4}} title="Si coché, une semaine sans évaluation ne rompt pas la série : on prend les dernières semaines avec évaluation.">
+          <input type="checkbox" checked={tolerant} onChange={(e) => setTolerant(e.target.checked)} /> Ignorer les semaines sans évaluation
+        </label>
+        <button className="btn primary" style={{marginLeft:"auto"}} onClick={exportExcel}>⬇ Exporter en Excel</button>
+      </div>
+
+      <div className="grid" style={{display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))", gap:12, marginBottom:16}}>
+        <div className="card" style={{padding:14}}><div style={{fontSize:12, color:"var(--textMuted)"}}>Conseillers en PAP</div><div style={{fontSize:28, fontWeight:700, color:nbAgents ? "var(--red)" : "var(--green)"}}>{nbAgents}</div><div style={{fontSize:11, color:"var(--textMuted)"}}>{pap.length} série(s) d'écart · {weeksLabel}</div></div>
+        {Object.entries(byInd).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([k, n]) => (
+          <div key={k} className="card" style={{padding:14}}><div style={{fontSize:12, color:"var(--textMuted)"}}>{k}</div><div style={{fontSize:28, fontWeight:700}}>{n}</div><div style={{fontSize:11, color:"var(--textMuted)"}}>objectif {OBJECTIFS[k]}{unit(k)}</div></div>
+        ))}
+        {Object.entries(byMgr).sort((a, b) => b[1].size - a[1].size).slice(0, 3).map(([m, s]) => (
+          <div key={m} className="card" style={{padding:14}}><div style={{fontSize:12, color:"var(--textMuted)"}}>Manager {m}</div><div style={{fontSize:28, fontWeight:700}}>{s.size}</div><div style={{fontSize:11, color:"var(--textMuted)"}}>conseiller(s) en PAP</div></div>
+        ))}
+      </div>
+
+      <div style={{overflowX:"auto"}}>
+        <table>
+          <thead><tr>{["Conseiller", "Manager", "Ancienneté", "Indicateur", "Objectif", ...Array.from({length:nbSem}, (_, i) => refWeek ? lab(refWeek - (nbSem - 1 - i)) : ""), "Moyenne", "Écart", "Sem. d'écart"].map((h, i) => <th key={i}>{h}</th>)}</tr></thead>
+          <tbody>
+            {pap.length === 0 && <tr><td colSpan={9 + nbSem - 3} style={{textAlign:"center", padding:20, color:"var(--textMuted)"}}>Aucun conseiller en écart {nbSem} semaines d'affilée avec ces filtres.</td></tr>}
+            {pap.map((p, i) => (
+              <tr key={p.code + p.ind} style={{backgroundColor: i % 2 ? "var(--grey)" : "#fff"}}>
+                <td style={{fontWeight:600}}>{p.info.name} <span style={{fontSize:10, color:"var(--textMuted)"}}>({p.code})</span></td>
+                <td>{p.info.mgr}</td>
+                <td style={{textAlign:"center"}}>{p.info.eq || "—"}</td>
+                <td>{p.ind}</td>
+                <td style={{textAlign:"center", color:"var(--textMuted)", fontSize:12}}>{OBJECTIFS[p.ind]}{unit(p.ind)}</td>
+                {p.ser.map((x) => <td key={x.wk} style={{textAlign:"center", color:"var(--red)", background:"var(--redSoft)", fontWeight:600}}>{fmt(x.v, p.ind)}<span style={{fontSize:10, color:"var(--textMuted)", fontWeight:400}}> ({x.n})</span></td>)}
+                <td style={{textAlign:"center", fontWeight:600}}>{fmt(p.moy, p.ind)}</td>
+                <td style={{textAlign:"center", fontWeight:600, color:"var(--red)"}}>{(p.ecart > 0 ? "+" : "") + fmt(p.ecart, p.ind)}</td>
+                <td style={{textAlign:"center", fontWeight:700}}>{p.streak}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {watch.length > 0 && (
+        <div style={{marginTop:24}}>
+          <SectionTitle icon="👀">À surveiller — en écart {nbSem - 1} semaines d'affilée ({watch.length})</SectionTitle>
+          <div style={{overflowX:"auto"}}>
+            <table>
+              <thead><tr>{["Conseiller", "Manager", "Indicateur", "Objectif", "Semaines", "Moyenne"].map((h) => <th key={h}>{h}</th>)}</tr></thead>
+              <tbody>
+                {watch.map((p, i) => (
+                  <tr key={p.code + p.ind} style={{backgroundColor: i % 2 ? "var(--grey)" : "#fff"}}>
+                    <td style={{fontWeight:500}}>{p.info.name} <span style={{fontSize:10, color:"var(--textMuted)"}}>({p.code})</span></td>
+                    <td>{p.info.mgr}</td><td>{p.ind}</td>
+                    <td style={{textAlign:"center", color:"var(--textMuted)", fontSize:12}}>{OBJECTIFS[p.ind]}{unit(p.ind)}</td>
+                    <td style={{textAlign:"center"}}>{p.ser.map((x) => lab(x.wk) + " : " + fmt(x.v, p.ind)).join("  ·  ")}</td>
+                    <td style={{textAlign:"center", fontWeight:600, color:"var(--red)"}}>{fmt(p.moy, p.ind)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SuiviResultatsView({ allEvaluations, roster }) {
   const [mode, setMode] = useState("agent"); // "agent" | "equipe"
   const [fMois, setFMois] = useState("Tous");
@@ -5001,6 +5208,7 @@ function App(){
     { id:"reporting", label:"Reporting", icon:"📊" },
     { id:"performance", label:"Suivi performance", icon:"📈" },
     { id:"suivi_resultats", label:"Suivi agents / équipes", icon:"👥" },
+    { id:"pap", label:"PAP", icon:"🧭" },
     { id:"debriefing", label:"Suivi débriefing", icon:"📋" },
     { id:"analyse", label:"Analyse", icon:"🔍" },
     { id:"si_hubicus", label:"Suivi SI Hubicus", icon:"🚨" },
@@ -5033,7 +5241,7 @@ function App(){
         <div className="wrap header-inner">
           <div>
             <h1>Suivi Qualité — TERSEA Madagascar</h1>
-            <p>Débriefings managers · Reporting · Compte Auchan · Site Mada · <span title="Version du fichier déployé">Version 19/11/2026 (v9)</span></p>
+            <p>Débriefings managers · Reporting · Compte Auchan · Site Mada · <span title="Version du fichier déployé">Version 23/11/2026 (v10)</span></p>
           </div>
           <div className="status" style={{display:"flex", alignItems:"center", gap:10}}>
             <span>💾 {statusLabel}</span>
@@ -5081,6 +5289,7 @@ function App(){
         {tab === "reporting" && <ReportingView ecarts={ecarts} weekly={weekly} roster={roster} allEvaluations={allEvaluations} />}
         {tab === "performance" && <PerformanceView ecarts={ecarts} weekly={weekly} roster={roster} allEvaluations={allEvaluations} />}
         {tab === "suivi_resultats" && <SuiviResultatsView allEvaluations={allEvaluations} roster={roster} />}
+        {tab === "pap" && <PAPView allEvaluations={allEvaluations} roster={roster} />}
         {tab === "debriefing" && <DebriefingView ecarts={ecarts} setEcarts={setEcarts} weekly={weekly} onSaveNow={saveNow} roster={roster} allEvaluations={allEvaluations} criteresEcarts={criteresEcarts} />}
         {tab === "si_hubicus" && <SuiviSIView siHubicus={siHubicus} allEvaluations={allEvaluations} ecarts={ecarts} roster={roster} />}
         {tab === "analyse" && <AnalyseView ecarts={ecarts} roster={roster} allEvaluations={allEvaluations} nccResponses={nccResponses} criteresEcarts={criteresEcarts} itemsStats={itemsStats} />}
